@@ -86,9 +86,13 @@ def detect_market_regime(btc_klines):
         return "bearish"
     return "neutral"
 
-# ─── SCORING ──────────────────────────────────────────────────────────────────
+# ─── SCORING v4.2 ─────────────────────────────────────────────────────────────
+# v4   : direction stricte, momentum signé, pénalités pump/distance EMA
+# v4.1 : ema_score et rsi_score directionnels, volume seuils relevés,
+#         position_range, ema_spread, trend_strength
+# v4.2 : market_regime BTC intégré dans score_symbol (-10 pts si contre-tendance)
 
-def score_symbol(symbol, ticker_data=None):
+def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     klines = get_klines(symbol)
     if not klines or len(klines) < 30:
         return None
@@ -107,7 +111,7 @@ def score_symbol(symbol, ticker_data=None):
     relative_vol = calculate_relative_volume(volumes)
     current      = closes[-1]
 
-    # Variation 24h depuis ticker ou klines
+    # Variation 24h (avec signe — on ne prend PLUS abs())
     if ticker_data and "priceChangePercent" in ticker_data:
         price_change = float(ticker_data["priceChangePercent"])
         high_24h     = float(ticker_data.get("highPrice", current))
@@ -115,39 +119,100 @@ def score_symbol(symbol, ticker_data=None):
         price_change = round(((closes[-1] - closes[-24]) / closes[-24]) * 100, 2) if len(closes) >= 24 else 0
         high_24h     = max(highs[-24:]) if len(highs) >= 24 else max(highs)
 
-    distance_high = round(((high_24h - current) / high_24h) * 100, 2) if high_24h > 0 else 0
-    direction     = "LONG" if ema9 > ema21 and rsi < 70 else "SHORT" if ema9 < ema21 and rsi > 30 else "NEUTRAL"
+    distance_high  = round(((high_24h - current) / high_24h) * 100, 2) if high_24h > 0 else 0
+    distance_ema21 = round(abs((current - ema21) / ema21) * 100, 2) if ema21 > 0 else 0
 
-    # Scores composantes
-    mom_score = min(100, (abs(price_change) / 10) * 100) if abs(price_change) >= 2 else 0
+    # Position du prix dans le range 24h (0.0 = bas du range, 1.0 = haut)
+    low_24h    = min(lows[-24:]) if len(lows) >= 24 else min(lows)
+    range_24h  = high_24h - low_24h
+    position_range = round((current - low_24h) / range_24h, 3) if range_24h > 0 else 0.5
 
-    if ema9 > ema21 * 1.002:
-        ema_score = 80
-    elif ema9 > ema21:
-        ema_score = 60
-    elif ema9 < ema21 * 0.998:
-        ema_score = 20
+    # Force de tendance EMA
+    ema_spread = round(abs((ema9 - ema21) / ema21) * 100, 3) if ema21 > 0 else 0
+    if ema_spread > 2:
+        trend_strength = "strong"
+    elif ema_spread > 0.8:
+        trend_strength = "moderate"
+    else:
+        trend_strength = "weak"
+
+    # ── DIRECTION STRICTE v4 ──────────────────────────────────────────────────
+    # LONG : prix AU-DESSUS de ema9 et ema9 > ema21 + RSI dans zone saine
+    # SHORT : prix EN-DESSOUS de ema9 et ema9 < ema21 + RSI dans zone saine
+    if current > ema9 > ema21 and 45 <= rsi <= 72:
+        direction = "LONG"
+    elif current < ema9 < ema21 and 28 <= rsi <= 55:
+        direction = "SHORT"
+    else:
+        direction = "NEUTRAL"
+
+    # ── SCORE MOMENTUM v4 ────────────────────────────────────────────────────
+    # LONG : récompense uniquement les hausses (price_change > 0)
+    # SHORT : récompense uniquement les baisses (price_change < 0)
+    if direction == "LONG":
+        if price_change >= 2:
+            mom_score = min(100, (price_change / 10) * 100)
+        else:
+            mom_score = 0
+    elif direction == "SHORT":
+        if price_change <= -2:
+            mom_score = min(100, (abs(price_change) / 10) * 100)
+        else:
+            mom_score = 0
+    else:
+        mom_score = 0
+
+    # ── SCORE EMA v4.1 — symétrique LONG/SHORT ───────────────────────────────
+    if direction == "LONG":
+        if ema9 > ema21 * 1.002:
+            ema_score = 80
+        elif ema9 > ema21:
+            ema_score = 60
+        else:
+            ema_score = 20
+    elif direction == "SHORT":
+        if ema9 < ema21 * 0.998:
+            ema_score = 80
+        elif ema9 < ema21:
+            ema_score = 60
+        else:
+            ema_score = 20
     else:
         ema_score = 40
 
-    if 45 <= rsi <= 65:
-        rsi_score = 100
-    elif 35 <= rsi < 45 or 65 < rsi <= 75:
-        rsi_score = 60
-    elif rsi < 35:
-        rsi_score = 30
+    # ── SCORE RSI v4.1 — directionnel ────────────────────────────────────────
+    if direction == "LONG":
+        if 45 <= rsi <= 65:
+            rsi_score = 100
+        elif 35 <= rsi < 45 or 65 < rsi <= 72:
+            rsi_score = 60
+        elif rsi < 35:
+            rsi_score = 20   # survendu = pas idéal pour LONG momentum
+        else:
+            rsi_score = 10   # RSI > 72 = surachat
+    elif direction == "SHORT":
+        if 35 <= rsi <= 55:
+            rsi_score = 100  # zone idéale short continuation
+        elif 28 <= rsi < 35 or 55 < rsi <= 65:
+            rsi_score = 60
+        elif rsi > 65:
+            rsi_score = 20   # suracheté = pas idéal pour SHORT momentum
+        else:
+            rsi_score = 10   # RSI < 28 = survendu extrême
     else:
-        rsi_score = 10
+        rsi_score = 30
 
-    if relative_vol >= 2.0:
+    # ── SCORE VOLUME v4.1 — seuils relevés pour futures momentum ─────────────
+    if relative_vol >= 1.8:
         vol_score = 100
-    elif relative_vol >= 1.5:
+    elif relative_vol >= 1.4:
         vol_score = 80
-    elif relative_vol >= 1.0:
+    elif relative_vol >= 1.1:
         vol_score = 50
     else:
-        vol_score = 20
+        vol_score = 10
 
+    # ── SCORE VOLATILITE ─────────────────────────────────────────────────────
     atr_pct = (atr / current) * 100
     if 0.5 <= atr_pct <= 3.0:
         vola_score = 100
@@ -156,14 +221,66 @@ def score_symbol(symbol, ticker_data=None):
     else:
         vola_score = 50
 
+    # ── SCORE POSITION RANGE v4.1 ────────────────────────────────────────────
+    # LONG : idéal si prix dans milieu-haut du range (0.4 à 0.85)
+    # SHORT : idéal si prix dans milieu-bas du range (0.15 à 0.6)
+    if direction == "LONG":
+        if 0.4 <= position_range <= 0.85:
+            range_score = 100
+        elif 0.2 <= position_range < 0.4:
+            range_score = 50
+        elif position_range > 0.85:
+            range_score = 30   # trop haut dans le range = entrée tardive
+        else:
+            range_score = 10
+    elif direction == "SHORT":
+        if 0.15 <= position_range <= 0.6:
+            range_score = 100
+        elif 0.6 < position_range <= 0.8:
+            range_score = 50
+        elif position_range < 0.15:
+            range_score = 30   # trop bas dans le range = entrée tardive
+        else:
+            range_score = 10
+    else:
+        range_score = 30
+
+    # ── SCORE GLOBAL v4.1 ────────────────────────────────────────────────────
     global_score = round(
-        mom_score  * 0.25 +
-        ema_score  * 0.20 +
-        rsi_score  * 0.20 +
-        vol_score  * 0.20 +
-        vola_score * 0.15, 1
+        mom_score    * 0.22 +
+        ema_score    * 0.20 +
+        rsi_score    * 0.18 +
+        vol_score    * 0.18 +
+        vola_score   * 0.12 +
+        range_score  * 0.10, 1
     )
 
+    # ── PENALITES v4.2 ───────────────────────────────────────────────────────
+    # Pump/dump trop tardif
+    if direction == "LONG" and price_change > 12:
+        global_score -= 15
+    if direction == "SHORT" and price_change < -12:
+        global_score -= 15
+
+    # Trop loin de EMA21 (entrée tardive)
+    if distance_ema21 > 6:
+        global_score -= 15
+
+    # Direction NEUTRAL = score plafonné à 45 (jamais CANDIDAT)
+    if direction == "NEUTRAL":
+        global_score = min(global_score, 45)
+
+    # Pénalité market regime BTC v4.2
+    # LONG altcoin en marché BTC bearish = risque macro élevé
+    # SHORT altcoin en marché BTC bullish = contre-tendance risquée
+    if market_regime == "bearish" and direction == "LONG":
+        global_score -= 10
+    if market_regime == "bullish" and direction == "SHORT":
+        global_score -= 10
+
+    global_score = round(max(0, global_score), 1)
+
+    # ── FLAG ─────────────────────────────────────────────────────────────────
     if global_score >= 65:
         flag = "CANDIDAT"
     elif global_score >= 50:
@@ -172,23 +289,29 @@ def score_symbol(symbol, ticker_data=None):
         flag = "REJET"
 
     return {
-        "symbol":         symbol,
-        "score":          global_score,
-        "flag":           flag,
-        "direction":      direction,
-        "rsi":            rsi,
-        "ema9":           ema9,
-        "ema21":          ema21,
-        "atr":            atr,
-        "atr_pct":        round(atr_pct, 2),
-        "volume_relatif": relative_vol,
-        "distance_high":  distance_high,
-        "momentum_24h":   price_change,
-        "funding_rate":   funding_rate,
-        "current_price":  current,
+        "symbol":          symbol,
+        "score":           global_score,
+        "flag":            flag,
+        "direction":       direction,
+        "trend_strength":  trend_strength,
+        "market_regime":   market_regime,
+        "rsi":             rsi,
+        "ema9":            ema9,
+        "ema21":           ema21,
+        "ema_spread":      ema_spread,
+        "atr":             atr,
+        "atr_pct":         round(atr_pct, 2),
+        "volume_relatif":  relative_vol,
+        "distance_high":   distance_high,
+        "distance_ema21":  distance_ema21,
+        "position_range":  position_range,
+        "momentum_24h":    price_change,
+        "funding_rate":    funding_rate,
+        "current_price":   current,
     }
 
-# ─── ENDPOINT /prescore ───────────────────────────────────────────────────────
+# ─── ENDPOINT /prescore v4 ────────────────────────────────────────────────────
+# Garde le signe de priceChangePercent + filtre directionnel dès le préscore
 
 @app.route("/prescore", methods=["POST"])
 def prescore():
@@ -198,33 +321,50 @@ def prescore():
     scored = []
     for t in tickers:
         symbol           = t.get("symbol", "")
-        price_change_pct = abs(float(t.get("priceChangePercent", 0)))
+        price_change_pct = float(t.get("priceChangePercent", 0))  # AVEC signe
         volume           = float(t.get("quoteVolume", 0))
         high             = float(t.get("highPrice", 1))
         low              = float(t.get("lowPrice",  1))
         last             = float(t.get("lastPrice", 1))
+        open_price       = float(t.get("openPrice", last))
 
-        if price_change_pct < 1.5 or volume < 1_000_000:
+        # Filtre minimum : variation absolue > 1.5% et volume suffisant
+        if abs(price_change_pct) < 1.5 or volume < 1_000_000:
             continue
 
+        # Filtre directionnel : on sépare pompes et dumps
+        # On accepte les deux sens mais on garde l'info pour le scoring
         range_pct     = ((high - low) / low) * 100 if low > 0 else 0
         distance_high = ((high - last) / high) * 100 if high > 0 else 0
-        mom_score     = min(100, (price_change_pct / 10) * 100)
-        vol_score     = min(100, (volume / 50_000_000) * 100)
-        range_score   = min(100, (range_pct / 8) * 100)
-        prescore_val  = round(mom_score * 0.40 + vol_score * 0.35 + range_score * 0.25, 1)
+
+        # Momentum : récompense le mouvement dans sa direction (pas abs())
+        directional_pct = price_change_pct  # +12 = pump, -8 = dump
+        mom_score   = min(100, (abs(directional_pct) / 10) * 100)
+        vol_score   = min(100, (volume / 50_000_000) * 100)
+        range_score = min(100, (range_pct / 8) * 100)
+
+        # Pénalité pump/dump trop fort dès le préscore
+        penalty = 0
+        if abs(price_change_pct) > 15:
+            penalty = 20
+        elif abs(price_change_pct) > 12:
+            penalty = 10
+
+        prescore_val = round(
+            max(0, mom_score * 0.40 + vol_score * 0.35 + range_score * 0.25 - penalty), 1
+        )
 
         scored.append({
             "symbol":           symbol,
             "prescore":         prescore_val,
-            "price_change_pct": float(t.get("priceChangePercent", 0)),
+            "price_change_pct": price_change_pct,
             "volume":           volume,
             "range_pct":        round(range_pct, 2),
             "distance_high":    round(distance_high, 2),
             "lastPrice":        last,
             "highPrice":        high,
             "lowPrice":         low,
-            "openPrice":        float(t.get("openPrice", last)),
+            "openPrice":        open_price,
             "ticker":           t,
         })
 
@@ -238,8 +378,6 @@ def prescore():
     })
 
 # ─── ENDPOINT /score ──────────────────────────────────────────────────────────
-# Make envoie juste {"symbol": "BTCUSDT"}
-# Railway fetch les klines + funding lui-même
 
 @app.route("/score", methods=["POST"])
 def score():
@@ -250,36 +388,32 @@ def score():
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
 
-    result = score_symbol(symbol, ticker)
+    btc_klines    = get_klines("BTCUSDT", limit=50)
+    market_regime = detect_market_regime(btc_klines)
+
+    result = score_symbol(symbol, ticker, market_regime)
 
     if not result:
         return jsonify({"error": f"Could not score {symbol}"}), 500
 
-    # BTC market regime
-    btc_klines    = get_klines("BTCUSDT", limit=50)
-    market_regime = detect_market_regime(btc_klines)
-    result["market_regime"] = market_regime
-
     return jsonify(result)
 
 # ─── ENDPOINT /score_batch ────────────────────────────────────────────────────
-# Reçoit une liste de symbols + tickers et retourne les candidats 65+
 
 @app.route("/score_batch", methods=["POST"])
 def score_batch():
     data    = request.json
-    symbols = data.get("symbols", [])   # [{"symbol": "BTCUSDT", "ticker": {...}}]
+    symbols = data.get("symbols", [])
 
     btc_klines    = get_klines("BTCUSDT", limit=50)
     market_regime = detect_market_regime(btc_klines)
 
-    results   = []
+    results = []
     for item in symbols:
         symbol = item.get("symbol", "")
         ticker = item.get("ticker", {})
-        result = score_symbol(symbol, ticker)
+        result = score_symbol(symbol, ticker, market_regime)
         if result:
-            result["market_regime"] = market_regime
             results.append(result)
 
     results.sort(key=lambda x: x["score"], reverse=True)
@@ -299,7 +433,7 @@ def score_batch():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "3.0"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.2"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
