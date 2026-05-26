@@ -445,7 +445,47 @@ def score_batch():
         "total_pairs":   len(results)
     })
 
-# ─── HEALTH ───────────────────────────────────────────────────────────────────
+# ─── ENDPOINT /signal_text ───────────────────────────────────────────────────
+# Retourne les candidats formatés en texte brut pour GPT — pas de problème Make
+
+@app.route("/signal_text", methods=["POST"])
+def signal_text():
+    data    = request.json
+    symbols = data.get("symbols", data.get("top8", []))
+    symbol_list_str = data.get("symbol_list", "")
+    if not symbols and symbol_list_str:
+        symbols = [{"symbol": s.strip(), "ticker": {}} for s in symbol_list_str.split(",") if s.strip()]
+
+    btc_klines    = get_klines("BTCUSDT", limit=50)
+    market_regime = detect_market_regime(btc_klines)
+
+    results = []
+    for item in symbols:
+        symbol = item.get("symbol", "")
+        ticker = item.get("ticker", {})
+        result = score_symbol(symbol, ticker, market_regime)
+        if result:
+            results.append(result)
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    candidats = [r for r in results if r["flag"] == "CANDIDAT"]
+
+    if not candidats:
+        return jsonify({"text": "SKIP", "count": 0})
+
+    lines = [f"market_regime: {market_regime}\n"]
+    for r in candidats:
+        lines.append(
+            f"symbol: {r['symbol']} | score: {r['score']} | flag: {r['flag']} | "
+            f"direction: {r['direction']} | trend_strength: {r['trend_strength']} | "
+            f"rsi: {r['rsi']} | ema_spread: {r['ema_spread']} | "
+            f"volume_relatif: {r['volume_relatif']} | atr: {r['atr']} | atr_pct: {r['atr_pct']} | "
+            f"momentum_24h: {r['momentum_24h']} | distance_ema21: {r['distance_ema21']} | "
+            f"position_range: {r['position_range']} | current_price: {r['current_price']} | "
+            f"funding_rate: {r['funding_rate']} | market_regime: {r['market_regime']}"
+        )
+
+    return jsonify({"text": "\n".join(lines), "count": len(candidats)})
 
 @app.route("/health", methods=["GET"])
 def health():
