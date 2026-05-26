@@ -505,8 +505,6 @@ def full_analysis():
 
     # Fetch ticker 24h pour toutes les paires
     symbols_str = "%2C".join(symbols_config)
-    url = f'https://api.binance.com/api/v3/ticker/24hr?symbols=["{chr(34).join(symbols_config)}"]'
-    # Utilise l'endpoint individuel pour chaque paire via batch
     batch_url = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
     tickers_data = fetch_binance(batch_url)
 
