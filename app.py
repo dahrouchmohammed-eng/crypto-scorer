@@ -371,10 +371,14 @@ def prescore():
     scored.sort(key=lambda x: x["prescore"], reverse=True)
     top8 = scored[:8]
 
+    # Format prêt pour /score_batch — évite les problèmes de mapping Make
+    symbols_for_batch = [{"symbol": s["symbol"], "ticker": s["ticker"]} for s in top8]
+
     return jsonify({
         "total_analyzed": len(tickers),
         "after_filter":   len(scored),
-        "top8":           top8
+        "top8":           top8,
+        "symbols":        symbols_for_batch
     })
 
 # ─── ENDPOINT /score ──────────────────────────────────────────────────────────
