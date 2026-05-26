@@ -8,12 +8,17 @@ app = Flask(__name__)
 # ─── BINANCE API ──────────────────────────────────────────────────────────────
 
 def fetch_binance(url):
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read().decode())
-    except Exception as e:
-        return None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode())
+        except Exception as e:
+            if attempt == 2:
+                return None
+    return None
 
 def get_klines(symbol, interval="1h", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -281,7 +286,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     global_score = round(max(0, global_score), 1)
 
     # ── FLAG ─────────────────────────────────────────────────────────────────
-    if global_score >= 65:
+    if global_score >= 58:
         flag = "CANDIDAT"
     elif global_score >= 50:
         flag = "WATCHLIST"
