@@ -490,16 +490,34 @@ def signal_text():
 @app.route("/full_analysis", methods=["POST"])
 def full_analysis():
     data    = request.json
-    tickers = data.get("tickers", [])
 
+    # Récupère les 30 tickers directement depuis Binance — pas de dépendance Make
+    symbols_config = [
+        "BTCUSDT","ETHUSDT","SOLUSDT","LINKUSDT","AVAXUSDT","INJUSDT","FETUSDT",
+        "RNDRUSDT","ARBUSDT","SUIUSDT","WLDUSDT","TIAUSDT","JUPUSDT","SEIUSDT",
+        "GMXUSDT","PENDLEUSDT","ETHFIUSDT","STRKUSDT","ALTUSDT","PIXELUSDT",
+        "PORTALUSDT","MANTAUSDT","NEARUSDT","APTUSDT","DOGEUSDT","WIFUSDT",
+        "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
+    ]
+
+    # Fetch ticker 24h pour toutes les paires
+    symbols_str = "%2C".join(symbols_config)
+    url = f'https://api.binance.com/api/v3/ticker/24hr?symbols=["{chr(34).join(symbols_config)}"]'
+    # Utilise l'endpoint individuel pour chaque paire via batch
+    batch_url = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
+    tickers_data = fetch_binance(batch_url)
+
+    if not tickers_data:
+        return jsonify({"text": "SKIP", "count": 0, "market_regime": "unknown", "error": "Binance unreachable"})
+
+    # Prescore
     scored = []
-    for t in tickers:
+    for t in tickers_data:
         symbol           = t.get("symbol", "")
         price_change_pct = float(t.get("priceChangePercent", 0))
         volume           = float(t.get("quoteVolume", 0))
         high             = float(t.get("highPrice", 1))
         low              = float(t.get("lowPrice", 1))
-        last             = float(t.get("lastPrice", 1))
 
         if abs(price_change_pct) < 1.5 or volume < 1_000_000:
             continue
@@ -515,9 +533,11 @@ def full_analysis():
     scored.sort(key=lambda x: x["prescore"], reverse=True)
     top8 = scored[:8]
 
+    # Market regime
     btc_klines    = get_klines("BTCUSDT", limit=50)
     market_regime = detect_market_regime(btc_klines)
 
+    # Scoring complet
     results = []
     for item in top8:
         result = score_symbol(item["symbol"], item["ticker"], market_regime)
