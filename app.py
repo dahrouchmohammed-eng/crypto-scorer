@@ -373,12 +373,15 @@ def prescore():
 
     # Format prêt pour /score_batch — évite les problèmes de mapping Make
     symbols_for_batch = [{"symbol": s["symbol"], "ticker": s["ticker"]} for s in top8]
+    # Liste simple des symbols pour Make (JSON string compatible)
+    symbol_list = ",".join([s["symbol"] for s in top8])
 
     return jsonify({
         "total_analyzed": len(tickers),
         "after_filter":   len(scored),
         "top8":           top8,
-        "symbols":        symbols_for_batch
+        "symbols":        symbols_for_batch,
+        "symbol_list":    symbol_list
     })
 
 # ─── ENDPOINT /score ──────────────────────────────────────────────────────────
@@ -407,7 +410,11 @@ def score():
 @app.route("/score_batch", methods=["POST"])
 def score_batch():
     data    = request.json
+    # Accepte soit un array "symbols" soit une string "symbol_list" séparée par virgules
     symbols = data.get("symbols", data.get("top8", []))
+    symbol_list_str = data.get("symbol_list", "")
+    if not symbols and symbol_list_str:
+        symbols = [{"symbol": s.strip(), "ticker": {}} for s in symbol_list_str.split(",") if s.strip()]
 
     btc_klines    = get_klines("BTCUSDT", limit=50)
     market_regime = detect_market_regime(btc_klines)
