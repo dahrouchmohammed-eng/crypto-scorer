@@ -487,6 +487,63 @@ def signal_text():
 
     return jsonify({"text": "\n".join(lines), "count": len(candidats)})
 
+@app.route("/full_analysis", methods=["POST"])
+def full_analysis():
+    data    = request.json
+    tickers = data.get("tickers", [])
+
+    scored = []
+    for t in tickers:
+        symbol           = t.get("symbol", "")
+        price_change_pct = float(t.get("priceChangePercent", 0))
+        volume           = float(t.get("quoteVolume", 0))
+        high             = float(t.get("highPrice", 1))
+        low              = float(t.get("lowPrice", 1))
+        last             = float(t.get("lastPrice", 1))
+
+        if abs(price_change_pct) < 1.5 or volume < 1_000_000:
+            continue
+
+        range_pct    = ((high - low) / low) * 100 if low > 0 else 0
+        mom_score    = min(100, (abs(price_change_pct) / 10) * 100)
+        vol_score    = min(100, (volume / 50_000_000) * 100)
+        range_score  = min(100, (range_pct / 8) * 100)
+        penalty      = 20 if abs(price_change_pct) > 15 else (10 if abs(price_change_pct) > 12 else 0)
+        prescore_val = round(max(0, mom_score * 0.40 + vol_score * 0.35 + range_score * 0.25 - penalty), 1)
+        scored.append({"symbol": symbol, "prescore": prescore_val, "ticker": t})
+
+    scored.sort(key=lambda x: x["prescore"], reverse=True)
+    top8 = scored[:8]
+
+    btc_klines    = get_klines("BTCUSDT", limit=50)
+    market_regime = detect_market_regime(btc_klines)
+
+    results = []
+    for item in top8:
+        result = score_symbol(item["symbol"], item["ticker"], market_regime)
+        if result:
+            results.append(result)
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    candidats = [r for r in results if r["flag"] == "CANDIDAT"]
+
+    if not candidats:
+        return jsonify({"text": "SKIP", "count": 0, "market_regime": market_regime})
+
+    lines = [f"market_regime_btc: {market_regime}\n"]
+    for r in candidats:
+        lines.append(
+            f"symbol: {r['symbol']} | score: {r['score']} | direction: {r['direction']} | "
+            f"trend_strength: {r['trend_strength']} | rsi: {r['rsi']} | "
+            f"ema_spread: {r['ema_spread']} | volume_relatif: {r['volume_relatif']} | "
+            f"atr: {r['atr']} | atr_pct: {r['atr_pct']} | momentum_24h: {r['momentum_24h']} | "
+            f"distance_ema21: {r['distance_ema21']} | position_range: {r['position_range']} | "
+            f"current_price: {r['current_price']} | funding_rate: {r['funding_rate']} | "
+            f"market_regime: {r['market_regime']}"
+        )
+
+    return jsonify({"text": "\n".join(lines), "count": len(candidats), "market_regime": market_regime})
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.2"})
