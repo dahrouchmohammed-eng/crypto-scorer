@@ -403,7 +403,7 @@ def score():
 @app.route("/score_batch", methods=["POST"])
 def score_batch():
     data    = request.json
-    symbols = data.get("symbols", [])
+    symbols = data.get("symbols", data.get("top8", []))
 
     btc_klines    = get_klines("BTCUSDT", limit=50)
     market_regime = detect_market_regime(btc_klines)
