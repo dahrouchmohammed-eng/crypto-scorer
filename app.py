@@ -275,13 +275,16 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if direction == "NEUTRAL":
         global_score = min(global_score, 45)
 
-    # Pénalité market regime BTC v4.2
-    # LONG altcoin en marché BTC bearish = risque macro élevé
-    # SHORT altcoin en marché BTC bullish = contre-tendance risquée
+    # Pénalité/bonus market regime BTC v4.2
     if market_regime == "bearish" and direction == "LONG":
         global_score -= 10
     if market_regime == "bullish" and direction == "SHORT":
         global_score -= 10
+    # Bonus alignement tendance macro
+    if market_regime == "bearish" and direction == "SHORT":
+        global_score += 8
+    if market_regime == "bullish" and direction == "LONG":
+        global_score += 8
 
     global_score = round(max(0, global_score), 1)
 
