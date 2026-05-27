@@ -383,9 +383,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     global_score = round(max(0, global_score), 1)
 
     # ── FLAG ─────────────────────────────────────────────────────────────────
-    if global_score >= 58:   flag = "CANDIDAT"
-    elif global_score >= 50: flag = "WATCHLIST"
-    else:                    flag = "REJET"
+    if global_score >= 58:
+        flag = "CANDIDAT"
+    elif global_score >= 52:
+        flag = "WATCHLIST"
+    else:
+        flag = "REJET"
 
     return {
         "symbol":          symbol,
@@ -527,6 +530,15 @@ def full_analysis():
         results.sort(key=lambda x: x["score"], reverse=True)
         candidats = [r for r in results if r["flag"] == "CANDIDAT"]
 
+        # Fallback : si aucun CANDIDAT, envoyer la meilleure WATCHLIST à GPT
+        # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
+        watchlist_fallback = False
+        if not candidats:
+            watchlist = [r for r in results if r["flag"] == "WATCHLIST"]
+            if watchlist:
+                candidats = watchlist[:1]
+                watchlist_fallback = True
+
         if not candidats:
             return jsonify({
                 "text":             "SKIP",
@@ -536,10 +548,11 @@ def full_analysis():
             })
 
         # Formatage texte pour GPT
-        lines = [f"market_regime_btc: {market_regime}\n"]
+        fallback_note = "\n⚠️ MODE WATCHLIST : aucun CANDIDAT disponible. Signal de calibration uniquement.\n" if watchlist_fallback else ""
+        lines = [f"market_regime_btc: {market_regime}\n{fallback_note}"]
         for r in candidats:
             lines.append(
-                f"symbol: {r['symbol']} | score: {r['score']} | direction: {r['direction']} | "
+                f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | direction: {r['direction']} | "
                 f"entry_type: {r['entry_type']} | trend_strength: {r['trend_strength']} | "
                 f"rsi: {r['rsi']} | ema_spread: {r['ema_spread']} | ema50_trend: {r['ema50_trend']} | "
                 f"volume_relatif: {r['volume_relatif']} | atr: {r['atr']} | atr_pct: {r['atr_pct']} | "
