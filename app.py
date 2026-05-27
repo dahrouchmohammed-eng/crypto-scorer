@@ -488,6 +488,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if market_regime == "volatile": leverage_caps.append(3)
     if entry_type == "EARLY":       leverage_caps.append(3)
     if flag == "WATCHLIST":         leverage_caps.append(3)
+    # Sécurité macro : réduire fortement le levier si le trade est contre le régime BTC
+    if (market_regime == "bearish" and direction == "LONG") or \
+       (market_regime == "bullish" and direction == "SHORT"):
+        leverage_caps.append(3)
     max_leverage = min(leverage_caps)
 
     # Confiance
