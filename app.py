@@ -63,13 +63,9 @@ def fetch_binance(url):
     return None
 
 def get_klines(symbol, interval="1h", limit=100):
-    # Essai Futures d'abord, fallback Spot si inaccessible
-    url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    url_spot    = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    result = fetch_binance(url_futures)
-    if result is None:
-        result = fetch_binance(url_spot)
-    return result
+    # Futures only — pas de fallback Spot
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    return fetch_binance(url)
 
 def get_funding_rate(symbol):
     try:
@@ -608,15 +604,18 @@ def full_analysis():
             "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
         ]
 
-        # Essai Futures d'abord, fallback Spot si inaccessible
-        batch_url_futures = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
-        batch_url_spot    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
-        tickers_data = fetch_binance(batch_url_futures)
-        if tickers_data is None:
-            tickers_data = fetch_binance(batch_url_spot)
+        # Futures only — pas de fallback Spot
+        batch_url = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
+        tickers_data = fetch_binance(batch_url)
 
         if not tickers_data:
-            return jsonify({"text": "SKIP", "count": 0, "market_regime": "unknown", "error": "Binance unreachable"})
+            return jsonify({
+                "text": "SKIP",
+                "count": 0,
+                "market_regime": "unknown",
+                "data_source": "FUTURES",
+                "error": "Binance Futures unreachable"
+            })
 
         # ── DOUBLE PORTE PRESCORE v4.4 ────────────────────────────────────────
         scored = []
@@ -711,6 +710,7 @@ def full_analysis():
                 "text":             "SKIP",
                 "count":            0,
                 "market_regime":    market_regime,
+                "data_source":      "FUTURES",
                 "cooldown_skipped": cooldown_skipped
             })
 
@@ -736,6 +736,7 @@ def full_analysis():
             "text":             "\n".join(lines),
             "count":            len(candidats),
             "market_regime":    market_regime,
+            "data_source":      data_source,
             "cooldown_skipped": cooldown_skipped
         })
 
@@ -746,7 +747,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-v9"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-pure-v10"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
