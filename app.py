@@ -517,6 +517,13 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if flag == "WATCHLIST":      confidence = min(confidence, 60)
     confidence = round(max(45, min(88, confidence)), 1)
 
+    # Sécurité levier basée sur la confiance finale
+    # Objectif : éviter un levier élevé sur setups à conviction moyenne/faible.
+    if confidence < 60:
+        max_leverage = min(max_leverage, 3)
+    elif confidence < 65:
+        max_leverage = min(max_leverage, 5)
+
     return {
         "symbol":          symbol,
         "score":           global_score,
@@ -674,6 +681,11 @@ def full_analysis():
         ]
         candidats = limit_weak_candidates(candidats)
 
+        # Si le meilleur candidat est weak, ne proposer que TOP 1
+        # Sécurité côté Python pour éviter que GPT propose TOP 2 après un TOP 1 weak.
+        if candidats and candidats[0].get("trend_strength") == "weak":
+            candidats = candidats[:1]
+
         # Fallback : si aucun CANDIDAT valide en R/R, envoyer la meilleure WATCHLIST à GPT
         # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
         watchlist_fallback = False
@@ -685,6 +697,11 @@ def full_analysis():
                 and r["direction"] != "NEUTRAL"
             ]
             watchlist = limit_weak_candidates(watchlist)
+
+            # Si la meilleure watchlist est weak, rester strictement sur TOP 1
+            if watchlist and watchlist[0].get("trend_strength") == "weak":
+                watchlist = watchlist[:1]
+
             if watchlist:
                 candidats = watchlist[:1]
                 watchlist_fallback = True
@@ -729,7 +746,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-v9"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
