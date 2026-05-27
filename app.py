@@ -63,7 +63,7 @@ def fetch_binance(url):
     return None
 
 def get_klines(symbol, interval="1h", limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
     return fetch_binance(url)
 
 def get_funding_rate(symbol):
@@ -596,7 +596,7 @@ def full_analysis():
             "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
         ]
 
-        batch_url    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
+        batch_url    = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
         tickers_data = fetch_binance(batch_url)
 
         if not tickers_data:
@@ -720,7 +720,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
