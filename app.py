@@ -527,6 +527,23 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if flag == "WATCHLIST":      confidence = min(confidence, 60)
     confidence = round(max(45, min(88, confidence)), 1)
 
+    # Sécurité levier après calcul de la confiance finale :
+    # - confiance < 60%  -> 3x maximum
+    # - confiance < 65%  -> 5x maximum
+    # Cela évite les signaux 7x avec conviction moyenne/faible.
+    if confidence < 60:
+        max_leverage = min(max_leverage, 3)
+    elif confidence < 65:
+        max_leverage = min(max_leverage, 5)
+
+    # Durée estimée calculée par Python
+    if trend_strength == "strong":
+        duration_label = "24 à 72h"
+    elif trend_strength == "moderate":
+        duration_label = "6 à 24h"
+    else:
+        duration_label = "2 à 6h"
+
     return {
         "symbol":          symbol,
         "score":           global_score,
@@ -560,6 +577,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "rr_valid":        rr_valid,
         "max_leverage":    max_leverage,
         "confidence":      confidence,
+        "duration_label":   duration_label,
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -705,6 +723,11 @@ def full_analysis():
         ]
         candidats = limit_weak_candidates(candidats)
 
+        # Sécurité forte côté Python :
+        # si le meilleur candidat est weak, ne jamais envoyer de TOP 2 à GPT.
+        if candidats and candidats[0].get("trend_strength") == "weak":
+            candidats = candidats[:1]
+
         # Fallback : si aucun CANDIDAT valide en R/R, envoyer la meilleure WATCHLIST à GPT
         # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
         watchlist_fallback = False
@@ -716,6 +739,11 @@ def full_analysis():
                 and r["direction"] != "NEUTRAL"
             ]
             watchlist = limit_weak_candidates(watchlist)
+
+            # Même sécurité : si la meilleure WATCHLIST est weak, TOP 1 uniquement.
+            if watchlist and watchlist[0].get("trend_strength") == "weak":
+                watchlist = watchlist[:1]
+
             if watchlist:
                 candidats = watchlist[:1]
                 watchlist_fallback = True
@@ -745,7 +773,8 @@ def full_analysis():
                 f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
                 f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
                 f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
-                f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']}"
+                f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
+                f"duration_label: {r['duration_label']}"
             )
 
         return jsonify({
@@ -762,7 +791,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-datasource"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-datasource-v11"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
