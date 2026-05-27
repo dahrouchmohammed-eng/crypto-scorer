@@ -81,21 +81,35 @@ def detect_market_regime(btc_klines):
     if not btc_klines or len(btc_klines) < 30:
         return "unknown"
     closes  = [float(k[4]) for k in btc_klines]
+    highs   = [float(k[2]) for k in btc_klines]
+    lows    = [float(k[3]) for k in btc_klines]
     ema9    = calculate_ema(closes, 9)
     ema21   = calculate_ema(closes, 21)
     rsi     = calculate_rsi(closes)
+    atr     = calculate_atr(highs, lows, closes)
     current = closes[-1]
+
+    # Détection volatile/danger — priorité absolue
+    atr_pct = (atr / current) * 100
+    variation_2h = abs((closes[-1] - closes[-3]) / closes[-3] * 100) if len(closes) >= 3 else 0
+    variation_4h = abs((closes[-1] - closes[-5]) / closes[-5] * 100) if len(closes) >= 5 else 0
+
+    if atr_pct > 4 or variation_2h > 3 or variation_4h > 5:
+        return "volatile"
+
     if current > ema9 > ema21 and rsi > 50:
         return "bullish"
     elif current < ema9 < ema21 and rsi < 50:
         return "bearish"
     return "neutral"
 
-# ─── SCORING v4.2 ─────────────────────────────────────────────────────────────
+# ─── SCORING v4.3 ─────────────────────────────────────────────────────────────
 # v4   : direction stricte, momentum signé, pénalités pump/distance EMA
 # v4.1 : ema_score et rsi_score directionnels, volume seuils relevés,
 #         position_range, ema_spread, trend_strength
-# v4.2 : market_regime BTC intégré dans score_symbol (-10 pts si contre-tendance)
+# v4.2 : market_regime BTC intégré dans score_symbol (+bonus alignement)
+# v4.3 : RSI extrême gradué, distance EMA graduée, 3 bougies explosives,
+#         support/résistance range 24h, BTC volatile/danger
 
 def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     klines = get_klines(symbol)
@@ -260,26 +274,67 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         range_score  * 0.10, 1
     )
 
-    # ── PENALITES v4.2 ───────────────────────────────────────────────────────
+    # ── PENALITES v4.3 ───────────────────────────────────────────────────────
+    # 1. RSI extrême dans le sens du trade
+    if direction == "LONG":
+        if rsi > 68:
+            global_score -= 10
+        if rsi > 72:
+            global_score -= 10  # double pénalité au-delà de 72
+    if direction == "SHORT":
+        if rsi < 32:
+            global_score -= 10
+        if rsi < 28:
+            global_score -= 10  # double pénalité en-dessous de 28
+
+    # 2. Distance EMA21 graduée
+    if distance_ema21 > 3:
+        global_score -= 5
+    if distance_ema21 > 6:
+        global_score -= 10
+    if distance_ema21 > 10:
+        global_score -= 10
+
     # Pump/dump trop tardif
     if direction == "LONG" and price_change > 12:
         global_score -= 15
     if direction == "SHORT" and price_change < -12:
         global_score -= 15
 
-    # Trop loin de EMA21 (entrée tardive)
-    if distance_ema21 > 6:
-        global_score -= 15
+    # 3. Détection 3 bougies consécutives explosives (anti-FOMO)
+    last_3_changes = []
+    for i in range(-3, 0):
+        if closes[i-1] > 0:
+            chg = (closes[i] - closes[i-1]) / closes[i-1] * 100
+            last_3_changes.append(chg)
+
+    if len(last_3_changes) == 3:
+        if all(c > 2.5 for c in last_3_changes) and direction == "LONG":
+            global_score -= 20  # 3 bougies vertes explosives = entrée LONG tardive
+        if all(c < -2.5 for c in last_3_changes) and direction == "SHORT":
+            global_score -= 20  # 3 bougies rouges explosives = short tardif
+
+    # 4. Proximité support/résistance (position dans range 24h)
+    # Trop près du haut du range pour LONG = résistance proche
+    # Trop près du bas du range pour SHORT = support proche
+    if direction == "LONG" and position_range > 0.88:
+        global_score -= 15  # proche résistance 24h
+    if direction == "SHORT" and position_range < 0.12:
+        global_score -= 15  # proche support 24h
 
     # Direction NEUTRAL = score plafonné à 45 (jamais CANDIDAT)
     if direction == "NEUTRAL":
         global_score = min(global_score, 45)
 
-    # Pénalité/bonus market regime BTC v4.2
+    # Pénalité/bonus market regime BTC v4.3
+    if market_regime == "volatile":
+        global_score -= 15  # marché chaotique = pénalité forte mais pas bloquante
     if market_regime == "bearish" and direction == "LONG":
         global_score -= 10
     if market_regime == "bullish" and direction == "SHORT":
         global_score -= 10
+    if market_regime == "neutral":
+        global_score -= 5   # marché sans direction = légère pénalité
     # Bonus alignement tendance macro
     if market_regime == "bearish" and direction == "SHORT":
         global_score += 8
@@ -567,7 +622,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.2"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.3"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
