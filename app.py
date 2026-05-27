@@ -154,6 +154,24 @@ def detect_market_regime(btc_klines):
         return "bearish"
     return "neutral"
 
+def limit_weak_candidates(candidates):
+    """
+    Sécurité côté Python :
+    - ne jamais envoyer plus d'un setup trend_strength = weak à GPT
+    - conserve l'ordre de tri déjà appliqué par score décroissant
+    """
+    final = []
+    weak_added = False
+
+    for r in candidates:
+        if r.get("trend_strength") == "weak":
+            if weak_added:
+                continue
+            weak_added = True
+        final.append(r)
+
+    return final
+
 # ─── SCORING v4.4 ─────────────────────────────────────────────────────────────
 # v4   : direction stricte, momentum signé, pénalités pump/distance EMA
 # v4.1 : ema_score/rsi_score directionnels, volume seuils relevés,
@@ -390,6 +408,106 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     else:
         flag = "REJET"
 
+    # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
+
+    # Entry zone
+    if direction == "LONG":
+        if entry_type == "EARLY":
+            entry_low  = round(current - 0.40 * atr, 8)
+            entry_high = round(current, 8)
+        else:
+            entry_low  = round(current - 0.25 * atr, 8)
+            entry_high = round(current + 0.15 * atr, 8)
+    elif direction == "SHORT":
+        if entry_type == "EARLY":
+            entry_low  = round(current, 8)
+            entry_high = round(current + 0.40 * atr, 8)
+        else:
+            entry_low  = round(current - 0.15 * atr, 8)
+            entry_high = round(current + 0.25 * atr, 8)
+    else:
+        entry_low  = round(current, 8)
+        entry_high = round(current, 8)
+
+    entry_avg = round((entry_low + entry_high) / 2, 8)
+
+    # Stop Loss
+    # Important : SL calculé depuis entry_avg pour garantir un R/R cohérent avec TP2.
+    # Avec TP2 = entry_avg ± 2×ATR, un SL à 1×ATR donne R/R ≈ 2.
+    memecoins = ["DOGEUSDT","WIFUSDT","PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"]
+    majors    = ["BTCUSDT","ETHUSDT","SOLUSDT"]
+    if symbol in memecoins:    sl_max_pct = 2.0
+    elif symbol in majors:     sl_max_pct = 4.0
+    else:                      sl_max_pct = 3.0
+
+    if direction == "LONG":
+        sl_raw = round(entry_avg - 1.0 * atr, 8)
+        sl_distance = abs(current - sl_raw) / current * 100 if current > 0 else 0
+        if sl_distance > sl_max_pct:
+            sl_raw = round(current * (1 - sl_max_pct / 100), 8)
+        stop_loss = sl_raw
+    elif direction == "SHORT":
+        sl_raw = round(entry_avg + 1.0 * atr, 8)
+        sl_distance = abs(sl_raw - current) / current * 100 if current > 0 else 0
+        if sl_distance > sl_max_pct:
+            sl_raw = round(current * (1 + sl_max_pct / 100), 8)
+        stop_loss = sl_raw
+    else:
+        stop_loss = round(current, 8)
+
+    # Take Profits
+    if direction == "LONG":
+        tp1 = round(entry_avg + 1 * atr, 8)
+        tp2 = round(entry_avg + 2 * atr, 8)
+        tp3 = round(entry_avg + 3 * atr, 8)
+        tp4 = round(entry_avg + 4 * atr, 8)
+    elif direction == "SHORT":
+        tp1 = round(entry_avg - 1 * atr, 8)
+        tp2 = round(entry_avg - 2 * atr, 8)
+        tp3 = round(entry_avg - 3 * atr, 8)
+        tp4 = round(entry_avg - 4 * atr, 8)
+    else:
+        tp1 = tp2 = tp3 = tp4 = round(current, 8)
+
+    # Risk / Reward
+    risk        = abs(entry_avg - stop_loss)
+    reward_tp2  = abs(tp2 - entry_avg)
+    risk_reward = round(reward_tp2 / risk, 2) if risk > 0 else 0
+    rr_valid    = risk_reward >= 2.0
+
+    # Levier maximum
+    memecoins = ["DOGEUSDT","WIFUSDT","PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"]
+    majors    = ["BTCUSDT","ETHUSDT","SOLUSDT"]
+    if symbol in memecoins:    base_leverage = 5
+    elif symbol in majors:     base_leverage = 10
+    else:                      base_leverage = 7
+
+    leverage_caps = [base_leverage]
+    if trend_strength == "weak":    leverage_caps.append(3)
+    if market_regime == "neutral":  leverage_caps.append(5)
+    if market_regime == "volatile": leverage_caps.append(3)
+    if entry_type == "EARLY":       leverage_caps.append(3)
+    if flag == "WATCHLIST":         leverage_caps.append(3)
+    max_leverage = min(leverage_caps)
+
+    # Confiance
+    confidence = global_score
+    if trend_strength == "strong":                          confidence += 5
+    if trend_strength == "weak":                            confidence -= 5
+    if market_regime == "neutral":                          confidence -= 5
+    if market_regime == "volatile":                         confidence -= 10
+    if (market_regime == "bearish" and direction == "LONG") or \
+       (market_regime == "bullish" and direction == "SHORT"): confidence -= 10
+    if entry_type == "EARLY":                               confidence -= 5
+    if distance_ema21 > 6:                                  confidence -= 5
+    if (direction == "LONG"  and not (0.4 <= position_range <= 0.85)) or \
+       (direction == "SHORT" and not (0.15 <= position_range <= 0.6)): confidence -= 5
+
+    # Plafonds confiance
+    if trend_strength == "weak": confidence = min(confidence, 68)
+    if flag == "WATCHLIST":      confidence = min(confidence, 60)
+    confidence = round(max(45, min(88, confidence)), 1)
+
     return {
         "symbol":          symbol,
         "score":           global_score,
@@ -399,22 +517,29 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "trend_strength":  trend_strength,
         "market_regime":   market_regime,
         "rsi":             rsi,
-        "ema9":            ema9,
-        "ema21":           ema21,
-        "ema50":           ema50,
-        "ema50_trend":     ema50_trend,
-        "above_ema50":     above_ema50,
         "ema_spread":      ema_spread,
+        "ema50_trend":     ema50_trend,
         "atr":             atr,
         "atr_pct":         round(atr_pct, 2),
         "volume_relatif":  relative_vol,
-        "distance_high":   distance_high,
         "distance_ema21":  distance_ema21,
-        "distance_ema50":  distance_ema50,
         "position_range":  position_range,
         "momentum_24h":    price_change,
         "funding_rate":    funding_rate,
         "current_price":   current,
+        # ── Niveaux calculés par Python ──────────────────────────────────────
+        "entry_low":       entry_low,
+        "entry_high":      entry_high,
+        "entry_avg":       entry_avg,
+        "stop_loss":       stop_loss,
+        "tp1":             tp1,
+        "tp2":             tp2,
+        "tp3":             tp3,
+        "tp4":             tp4,
+        "risk_reward":     risk_reward,
+        "rr_valid":        rr_valid,
+        "max_leverage":    max_leverage,
+        "confidence":      confidence,
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -528,13 +653,25 @@ def full_analysis():
                 results.append(result)
 
         results.sort(key=lambda x: x["score"], reverse=True)
-        candidats = [r for r in results if r["flag"] == "CANDIDAT"]
+        candidats = [
+            r for r in results
+            if r["flag"] == "CANDIDAT"
+            and r["rr_valid"]
+            and r["direction"] != "NEUTRAL"
+        ]
+        candidats = limit_weak_candidates(candidats)
 
-        # Fallback : si aucun CANDIDAT, envoyer la meilleure WATCHLIST à GPT
+        # Fallback : si aucun CANDIDAT valide en R/R, envoyer la meilleure WATCHLIST à GPT
         # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
         watchlist_fallback = False
         if not candidats:
-            watchlist = [r for r in results if r["flag"] == "WATCHLIST"]
+            watchlist = [
+                r for r in results
+                if r["flag"] == "WATCHLIST"
+                and r["rr_valid"]
+                and r["direction"] != "NEUTRAL"
+            ]
+            watchlist = limit_weak_candidates(watchlist)
             if watchlist:
                 candidats = watchlist[:1]
                 watchlist_fallback = True
@@ -547,19 +684,22 @@ def full_analysis():
                 "cooldown_skipped": cooldown_skipped
             })
 
-        # Formatage texte pour GPT
+        # Formatage texte pour GPT — niveaux précalculés par Python
         fallback_note = "\n⚠️ MODE WATCHLIST : aucun CANDIDAT disponible. Signal de calibration uniquement.\n" if watchlist_fallback else ""
         lines = [f"market_regime_btc: {market_regime}\n{fallback_note}"]
         for r in candidats:
             lines.append(
-                f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | direction: {r['direction']} | "
-                f"entry_type: {r['entry_type']} | trend_strength: {r['trend_strength']} | "
-                f"rsi: {r['rsi']} | ema_spread: {r['ema_spread']} | ema50_trend: {r['ema50_trend']} | "
-                f"volume_relatif: {r['volume_relatif']} | atr: {r['atr']} | atr_pct: {r['atr_pct']} | "
+                f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | "
+                f"direction: {r['direction']} | entry_type: {r['entry_type']} | "
+                f"trend_strength: {r['trend_strength']} | rsi: {r['rsi']} | "
+                f"ema_spread: {r['ema_spread']} | ema50_trend: {r['ema50_trend']} | "
+                f"volume_relatif: {r['volume_relatif']} | atr_pct: {r['atr_pct']} | "
                 f"momentum_24h: {r['momentum_24h']} | distance_ema21: {r['distance_ema21']} | "
-                f"distance_ema50: {r['distance_ema50']} | position_range: {r['position_range']} | "
-                f"current_price: {r['current_price']} | funding_rate: {r['funding_rate']} | "
-                f"market_regime: {r['market_regime']}"
+                f"position_range: {r['position_range']} | market_regime: {r['market_regime']} | "
+                f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
+                f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
+                f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
+                f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']}"
             )
 
         return jsonify({
