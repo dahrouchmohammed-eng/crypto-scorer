@@ -63,9 +63,23 @@ def fetch_binance(url):
     return None
 
 def get_klines(symbol, interval="1h", limit=100):
-    # Futures only — pas de fallback Spot
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    return fetch_binance(url)
+    """
+    Retourne les chandeliers + la source utilisée.
+    Priorité : Binance Futures.
+    Fallback : Binance Spot si Futures inaccessible depuis l'hébergement.
+    """
+    url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    url_spot    = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+
+    result = fetch_binance(url_futures)
+    if result is not None:
+        return result, "FUTURES"
+
+    result = fetch_binance(url_spot)
+    if result is not None:
+        return result, "SPOT_FALLBACK"
+
+    return None, "UNAVAILABLE"
 
 def get_funding_rate(symbol):
     try:
@@ -185,7 +199,7 @@ def limit_weak_candidates(candidates):
 #         protection RSI longueur, cleanup endpoints inutiles
 
 def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
-    klines = get_klines(symbol)
+    klines, data_source = get_klines(symbol)
     if not klines or len(klines) < 55:
         return None
 
@@ -513,13 +527,6 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if flag == "WATCHLIST":      confidence = min(confidence, 60)
     confidence = round(max(45, min(88, confidence)), 1)
 
-    # Sécurité levier basée sur la confiance finale
-    # Objectif : éviter un levier élevé sur setups à conviction moyenne/faible.
-    if confidence < 60:
-        max_leverage = min(max_leverage, 3)
-    elif confidence < 65:
-        max_leverage = min(max_leverage, 5)
-
     return {
         "symbol":          symbol,
         "score":           global_score,
@@ -539,6 +546,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "momentum_24h":    price_change,
         "funding_rate":    funding_rate,
         "current_price":   current,
+        "data_source":     data_source,
         # ── Niveaux calculés par Python ──────────────────────────────────────
         "entry_low":       entry_low,
         "entry_high":      entry_high,
@@ -604,17 +612,24 @@ def full_analysis():
             "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
         ]
 
-        # Futures only — pas de fallback Spot
-        batch_url = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
-        tickers_data = fetch_binance(batch_url)
+        # Essai Futures d'abord, fallback Spot si inaccessible
+        batch_url_futures = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
+        batch_url_spot    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
+
+        data_source_batch = "FUTURES"
+        tickers_data = fetch_binance(batch_url_futures)
+
+        if tickers_data is None:
+            tickers_data = fetch_binance(batch_url_spot)
+            data_source_batch = "SPOT_FALLBACK"
 
         if not tickers_data:
             return jsonify({
                 "text": "SKIP",
                 "count": 0,
                 "market_regime": "unknown",
-                "data_source": "FUTURES",
-                "error": "Binance Futures unreachable"
+                "data_source": "UNAVAILABLE",
+                "error": "Binance unreachable"
             })
 
         # ── DOUBLE PORTE PRESCORE v4.4 ────────────────────────────────────────
@@ -656,7 +671,7 @@ def full_analysis():
         top_candidates = momentum_top + early_top  # max 10 paires analysées
 
         # Market regime BTC
-        btc_klines    = get_klines("BTCUSDT", limit=50)
+        btc_klines, btc_data_source = get_klines("BTCUSDT", limit=50)
         market_regime = detect_market_regime(btc_klines)
 
         # Scoring complet avec filtre cooldown (lecture seule)
@@ -672,6 +687,16 @@ def full_analysis():
                 results.append(result)
 
         results.sort(key=lambda x: x["score"], reverse=True)
+
+        # Source utilisée pour le run :
+        # - FUTURES si ticker + klines sont futures
+        # - SPOT_FALLBACK si au moins une étape a basculé sur Spot
+        data_sources_used = {data_source_batch, btc_data_source}
+        data_sources_used.update([r.get("data_source", "UNAVAILABLE") for r in results])
+        data_source_run = "SPOT_FALLBACK" if "SPOT_FALLBACK" in data_sources_used else (
+            "FUTURES" if "FUTURES" in data_sources_used else "UNAVAILABLE"
+        )
+
         candidats = [
             r for r in results
             if r["flag"] == "CANDIDAT"
@@ -679,11 +704,6 @@ def full_analysis():
             and r["direction"] != "NEUTRAL"
         ]
         candidats = limit_weak_candidates(candidats)
-
-        # Si le meilleur candidat est weak, ne proposer que TOP 1
-        # Sécurité côté Python pour éviter que GPT propose TOP 2 après un TOP 1 weak.
-        if candidats and candidats[0].get("trend_strength") == "weak":
-            candidats = candidats[:1]
 
         # Fallback : si aucun CANDIDAT valide en R/R, envoyer la meilleure WATCHLIST à GPT
         # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
@@ -696,11 +716,6 @@ def full_analysis():
                 and r["direction"] != "NEUTRAL"
             ]
             watchlist = limit_weak_candidates(watchlist)
-
-            # Si la meilleure watchlist est weak, rester strictement sur TOP 1
-            if watchlist and watchlist[0].get("trend_strength") == "weak":
-                watchlist = watchlist[:1]
-
             if watchlist:
                 candidats = watchlist[:1]
                 watchlist_fallback = True
@@ -710,13 +725,13 @@ def full_analysis():
                 "text":             "SKIP",
                 "count":            0,
                 "market_regime":    market_regime,
-                "data_source":      "FUTURES",
+                "data_source":      data_source_run,
                 "cooldown_skipped": cooldown_skipped
             })
 
         # Formatage texte pour GPT — niveaux précalculés par Python
         fallback_note = "\n⚠️ MODE WATCHLIST : aucun CANDIDAT disponible. Signal de calibration uniquement.\n" if watchlist_fallback else ""
-        lines = [f"market_regime_btc: {market_regime}\n{fallback_note}"]
+        lines = [f"market_regime_btc: {market_regime}\ndata_source: {data_source_run}\n{fallback_note}"]
         for r in candidats:
             lines.append(
                 f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | "
@@ -726,6 +741,7 @@ def full_analysis():
                 f"volume_relatif: {r['volume_relatif']} | atr_pct: {r['atr_pct']} | "
                 f"momentum_24h: {r['momentum_24h']} | distance_ema21: {r['distance_ema21']} | "
                 f"position_range: {r['position_range']} | market_regime: {r['market_regime']} | "
+                f"data_source: {r.get('data_source', data_source_run)} | "
                 f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
                 f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
                 f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
@@ -736,7 +752,6 @@ def full_analysis():
             "text":             "\n".join(lines),
             "count":            len(candidats),
             "market_regime":    market_regime,
-            "data_source":      data_source,
             "cooldown_skipped": cooldown_skipped
         })
 
@@ -747,7 +762,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-pure-v10"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-datasource"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
