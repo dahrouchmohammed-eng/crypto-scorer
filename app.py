@@ -197,6 +197,8 @@ def limit_weak_candidates(candidates):
 # v4.4 : EMA50 structure long terme, cooldown APRÈS Telegram (/set_cooldown),
 #         double porte prescore (momentum + early), sécurisation request.json,
 #         protection RSI longueur, cleanup endpoints inutiles
+# v4.5A: ajout BREAKOUT LONG/SHORT, entry_type BREAKOUT,
+#        breakout_level, score breakout, levier breakout contrôlé
 
 def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     klines, data_source = get_klines(symbol)
@@ -247,6 +249,40 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
 
     atr_pct = (atr / current) * 100 if current > 0 else 0
 
+    # ── BREAKOUT v4.5A ───────────────────────────────────────────────────────
+    # Cassure du range court terme H1.
+    # On compare la bougie actuelle aux 11 bougies précédentes.
+    if len(highs) >= 13 and len(lows) >= 13:
+        recent_high = max(highs[-12:-1])
+        recent_low  = min(lows[-12:-1])
+    else:
+        recent_high = max(highs[:-1]) if len(highs) > 1 else current
+        recent_low  = min(lows[:-1]) if len(lows) > 1 else current
+
+    breakout_long = (
+        current > recent_high and
+        relative_vol >= 1.3 and
+        50 <= rsi <= 68 and
+        distance_ema21 <= 4.0 and
+        position_range <= 0.88 and
+        atr_pct <= 3.5
+    )
+
+    breakout_short = (
+        current < recent_low and
+        relative_vol >= 1.3 and
+        32 <= rsi <= 50 and
+        distance_ema21 <= 4.0 and
+        position_range >= 0.12 and
+        atr_pct <= 3.5
+    )
+
+    breakout_level = None
+    if breakout_long:
+        breakout_level = round(recent_high, 8)
+    elif breakout_short:
+        breakout_level = round(recent_low, 8)
+
     # ── DIRECTION STRICTE ────────────────────────────────────────────────────
     if current > ema9 > ema21 and 45 <= rsi <= 72:
         direction = "LONG"
@@ -276,9 +312,16 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         atr_pct <= 2.5
     )
 
-    # ── ENTRY TYPE — indépendant de direction ────────────────────────────────
-    # Un setup peut être LONG techniquement mais encore EARLY en momentum
-    if early_long or early_short:
+    # ── ENTRY TYPE — priorité : BREAKOUT > EARLY > MOMENTUM ─────────────────
+    # BREAKOUT = cassure confirmée d'un niveau court terme.
+    # EARLY    = anticipation avant mouvement fort.
+    # MOMENTUM = continuation déjà engagée.
+    if breakout_long or breakout_short:
+        entry_type = "BREAKOUT"
+        # Override direction si nécessaire
+        if direction == "NEUTRAL":
+            direction = "LONG" if breakout_long else "SHORT"
+    elif early_long or early_short:
         entry_type = "EARLY"
         # Override direction si NEUTRAL avec early détecté
         if direction == "NEUTRAL":
@@ -291,12 +334,16 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     # ── SCORE MOMENTUM ───────────────────────────────────────────────────────
     if direction == "LONG":
         if entry_type == "EARLY":
-            mom_score = 40  # score modéré pour early entry
+            mom_score = 40  # anticipation prudente
+        elif entry_type == "BREAKOUT":
+            mom_score = 70  # cassure confirmée : entre EARLY et MOMENTUM
         else:
             mom_score = min(100, (price_change / 10) * 100) if price_change >= 2 else 0
     elif direction == "SHORT":
         if entry_type == "EARLY":
             mom_score = 40
+        elif entry_type == "BREAKOUT":
+            mom_score = 70
         else:
             mom_score = min(100, (abs(price_change) / 10) * 100) if price_change <= -2 else 0
     else:
@@ -536,6 +583,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     elif confidence < 65:
         max_leverage = min(max_leverage, 5)
 
+    # Sécurité BREAKOUT :
+    # un breakout reste plus fiable qu'un early, mais peut être une fausse cassure.
+    # Si la confiance est inférieure à 70%, on plafonne le levier à 5x.
+    if entry_type == "BREAKOUT" and confidence < 70:
+        max_leverage = min(max_leverage, 5)
+
     # Durée estimée calculée par Python
     if trend_strength == "strong":
         duration_label = "24 à 72h"
@@ -550,6 +603,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "flag":            flag,
         "direction":       direction,
         "entry_type":      entry_type,
+        "breakout_level":  breakout_level,
         "trend_strength":  trend_strength,
         "market_regime":   market_regime,
         "rsi":             rsi,
@@ -764,6 +818,7 @@ def full_analysis():
             lines.append(
                 f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | "
                 f"direction: {r['direction']} | entry_type: {r['entry_type']} | "
+                f"breakout_level: {r.get('breakout_level')} | "
                 f"trend_strength: {r['trend_strength']} | rsi: {r['rsi']} | "
                 f"ema_spread: {r['ema_spread']} | ema50_trend: {r['ema50_trend']} | "
                 f"volume_relatif: {r['volume_relatif']} | atr_pct: {r['atr_pct']} | "
@@ -791,7 +846,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.4-futures-fallback-datasource-v11"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.5A-breakout-fallback-datasource"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
