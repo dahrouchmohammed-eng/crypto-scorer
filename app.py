@@ -91,6 +91,53 @@ def get_funding_rate(symbol):
         pass
     return 0.0
 
+def interpret_funding(funding_rate, direction):
+    """
+    Interprétation simple du funding futures.
+    Funding positif élevé  : longs crowded.
+    Funding négatif élevé  : shorts crowded.
+    La lecture dépend de la direction du trade.
+    """
+    if funding_rate is None:
+        funding_rate = 0.0
+
+    if funding_rate > 0.0005:
+        funding_signal = "longs crowded"
+    elif funding_rate < -0.0005:
+        funding_signal = "shorts crowded"
+    else:
+        funding_signal = "neutral"
+
+    confidence_adjustment = 0
+    derivatives_bias = "neutral"
+    derivatives_note = "funding neutral"
+
+    if funding_signal == "longs crowded":
+        if direction == "LONG":
+            confidence_adjustment = -5
+            derivatives_bias = "caution"
+            derivatives_note = "longs crowded, prudence sur LONG"
+        elif direction == "SHORT":
+            confidence_adjustment = 3
+            derivatives_bias = "supports short"
+            derivatives_note = "longs crowded, contexte favorable au SHORT"
+        else:
+            derivatives_note = "longs crowded"
+
+    elif funding_signal == "shorts crowded":
+        if direction == "SHORT":
+            confidence_adjustment = -5
+            derivatives_bias = "caution"
+            derivatives_note = "shorts crowded, risque de short squeeze"
+        elif direction == "LONG":
+            confidence_adjustment = 3
+            derivatives_bias = "supports long"
+            derivatives_note = "shorts crowded, contexte favorable au LONG"
+        else:
+            derivatives_note = "shorts crowded"
+
+    return funding_signal, derivatives_bias, derivatives_note, confidence_adjustment
+
 # ─── CALCULS TECHNIQUES ───────────────────────────────────────────────────────
 
 def calculate_rsi(closes, period=14):
@@ -199,6 +246,8 @@ def limit_weak_candidates(candidates):
 #         protection RSI longueur, cleanup endpoints inutiles
 # v4.5A: ajout BREAKOUT LONG/SHORT, entry_type BREAKOUT,
 #        breakout_level, score breakout, levier breakout contrôlé
+# v4.5B1: funding intelligence simple, derivatives_bias/note,
+#         ajustement confiance et levier selon funding
 
 def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     klines, data_source = get_klines(symbol)
@@ -330,6 +379,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         entry_type = "MOMENTUM"
     else:
         entry_type = "NEUTRAL"
+
+    # ── FUNDING INTELLIGENCE v4.5B1 ─────────────────────────────────────────
+    funding_signal, derivatives_bias, derivatives_note, funding_conf_adj = interpret_funding(
+        funding_rate,
+        direction
+    )
 
     # ── SCORE MOMENTUM ───────────────────────────────────────────────────────
     if direction == "LONG":
@@ -564,6 +619,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if market_regime == "volatile":                         confidence -= 10
     if (market_regime == "bearish" and direction == "LONG") or \
        (market_regime == "bullish" and direction == "SHORT"): confidence -= 10
+    confidence += funding_conf_adj
     if entry_type == "EARLY":                               confidence -= 5
     if distance_ema21 > 6:                                  confidence -= 5
     if (direction == "LONG"  and not (0.4 <= position_range <= 0.85)) or \
@@ -587,6 +643,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     # un breakout reste plus fiable qu'un early, mais peut être une fausse cassure.
     # Si la confiance est inférieure à 70%, on plafonne le levier à 5x.
     if entry_type == "BREAKOUT" and confidence < 70:
+        max_leverage = min(max_leverage, 5)
+
+    # Sécurité funding :
+    # si le funding signale un crowded trade contre notre direction,
+    # on évite les leviers agressifs.
+    if derivatives_bias == "caution":
         max_leverage = min(max_leverage, 5)
 
     # Durée estimée calculée par Python
@@ -616,6 +678,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "position_range":  position_range,
         "momentum_24h":    price_change,
         "funding_rate":    funding_rate,
+        "funding_signal":  funding_signal,
+        "derivatives_bias": derivatives_bias,
+        "derivatives_note": derivatives_note,
         "current_price":   current,
         "data_source":     data_source,
         # ── Niveaux calculés par Python ──────────────────────────────────────
@@ -825,6 +890,8 @@ def full_analysis():
                 f"momentum_24h: {r['momentum_24h']} | distance_ema21: {r['distance_ema21']} | "
                 f"position_range: {r['position_range']} | market_regime: {r['market_regime']} | "
                 f"data_source: {r.get('data_source', data_source_run)} | "
+                f"funding_rate: {r['funding_rate']} | funding_signal: {r['funding_signal']} | "
+                f"derivatives_bias: {r['derivatives_bias']} | derivatives_note: {r['derivatives_note']} | "
                 f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
                 f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
                 f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
@@ -846,7 +913,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.5A-breakout-fallback-datasource"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.5B1-funding-breakout-datasource"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
