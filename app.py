@@ -125,6 +125,7 @@ def log_signal(entry):
             "late_entry_risk": entry.get("late_entry_risk"),
             "risk_reward": entry.get("risk_reward"),
             "data_source": entry.get("data_source"),
+            "source_quality": entry.get("source_quality"),
             "market_regime": entry.get("market_regime"),
         }
         with _SIGNAL_LOG_LOCK:
@@ -476,6 +477,20 @@ def detect_market_regime(btc_klines, return_details=False):
 
 def normalize_symbol(symbol):
     return str(symbol or "").upper().strip()
+
+
+def source_quality_label(data_source):
+    """
+    Badge de qualité de source à afficher tel quel dans Telegram.
+    Objectif : éviter que GPT interprète ou embellisse la fiabilité de la donnée.
+    """
+    if data_source == "FUTURES":
+        return "🟢 FUTURES VERIFIED — Binance Futures"
+    if data_source == "BYBIT_FUTURES":
+        return "🟡 BYBIT FUTURES — futures alternatif"
+    if data_source == "SPOT_FALLBACK":
+        return "🟠 SPOT FALLBACK — données spot, dérivés non vérifiés"
+    return "⚪ UNAVAILABLE — source non vérifiée"
 
 
 def is_tradeable_usdt_symbol(symbol):
@@ -1295,6 +1310,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "short_watch_reasons": short_watch_reasons,
         "current_price":   current,
         "data_source":     data_source,
+        "source_quality":  source_quality_label(data_source),
         # ── Niveaux calculés par Python ──────────────────────────────────────
         "entry_low":       entry_low,
         "entry_high":      entry_high,
@@ -1519,6 +1535,7 @@ def full_analysis():
                 "FUTURES" if "FUTURES" in data_sources_used else "UNAVAILABLE"
             )
         )
+        source_quality_run = source_quality_label(data_source_run)
 
         # CANDIDAT = vrai signal. On bloque les late risk HIGH.
         candidats = [
@@ -1567,6 +1584,7 @@ def full_analysis():
                 "market_regime":    market_regime,
                 "market_danger":    market_details,
                 "data_source":      data_source_run,
+                "source_quality":   source_quality_run,
                 "universe_size":    len(tickers_data),
                 "analyzed_count":   len(top_candidates),
                 "cooldown_skipped": cooldown_skipped
@@ -1585,6 +1603,7 @@ def full_analysis():
             f"market_danger_score: {market_details.get('market_danger_score')} | "
             f"btc_note: {market_details.get('btc_note')}\n"
             f"data_source: {data_source_run}\n"
+            f"source_quality: {source_quality_run}\n"
             f"universe_size: {len(tickers_data)} | analyzed_count: {len(top_candidates)}\n"
             f"{fallback_note}"
         ]
@@ -1606,6 +1625,7 @@ def full_analysis():
                 f"late_entry_flags: {','.join(r.get('late_entry_flags', []))} | "
                 f"market_regime: {r['market_regime']} | market_danger_level: {r.get('market_danger_level')} | "
                 f"data_source: {r.get('data_source', data_source_run)} | "
+                f"source_quality: {r.get('source_quality', source_quality_label(r.get('data_source', data_source_run)))} | "
                 f"funding_rate: {r['funding_rate']} | funding_signal: {r['funding_signal']} | "
                 f"derivatives_bias: {r['derivatives_bias']} | derivatives_note: {r['derivatives_note']} | "
                 f"short_watch: {r.get('short_watch')} | short_watch_reasons: {','.join(r.get('short_watch_reasons', []))} | "
@@ -1703,7 +1723,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.3-thresholds-signal-log",
+        "version": "5.4-source-quality-risk-prompt",
         "providers": results
     })
 
@@ -1712,7 +1732,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.3-thresholds-signal-log"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.4-source-quality-risk-prompt"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
