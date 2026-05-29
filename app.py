@@ -1310,7 +1310,7 @@ def full_analysis():
                 "count": 0,
                 "market_regime": "unknown",
                 "data_source": "UNAVAILABLE",
-                "error": "Binance unreachable"
+                "error": "All providers unreachable: Binance Futures, Bybit Futures, Binance Vision Spot, Binance Spot"
             })
 
         # ── Market regime BTC enrichi v4.7 ──────────────────────────────────
@@ -1554,11 +1554,86 @@ def full_analysis():
     except Exception as e:
         return jsonify({"error": str(e), "text": "SKIP", "count": 0}), 500
 
+
+# ─── PROVIDER TEST ─────────────────────────────────────────────────────────────
+
+@app.route("/provider_test", methods=["GET"])
+def provider_test():
+    """
+    Debug Railway/API providers.
+    À appeler dans le navigateur :
+    /provider_test
+
+    Objectif :
+    - vérifier si Binance Futures passe
+    - vérifier si Bybit Futures passe
+    - vérifier si Binance Vision Spot passe
+    - vérifier si Binance Spot passe
+    """
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    results = {}
+
+    try:
+        bf_url = build_batch_ticker_url(
+            "https://fapi.binance.com/fapi/v1/ticker/24hr",
+            symbols
+        )
+        bf = fetch_binance(bf_url)
+        results["binance_futures"] = {
+            "ok": bf is not None,
+            "count": len(bf) if isinstance(bf, list) else (1 if bf else 0)
+        }
+    except Exception as e:
+        results["binance_futures"] = {"ok": False, "error": str(e)}
+
+    try:
+        bybit = fetch_bybit_linear_tickers(symbols)
+        results["bybit_futures"] = {
+            "ok": bybit is not None and len(bybit) > 0,
+            "count": len(bybit) if bybit else 0
+        }
+    except Exception as e:
+        results["bybit_futures"] = {"ok": False, "error": str(e)}
+
+    try:
+        bv_url = build_batch_ticker_url(
+            "https://data-api.binance.vision/api/v3/ticker/24hr",
+            symbols
+        )
+        bv = fetch_binance(bv_url)
+        results["binance_vision_spot"] = {
+            "ok": bv is not None,
+            "count": len(bv) if isinstance(bv, list) else (1 if bv else 0)
+        }
+    except Exception as e:
+        results["binance_vision_spot"] = {"ok": False, "error": str(e)}
+
+    try:
+        bs_url = build_batch_ticker_url(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            symbols
+        )
+        bs = fetch_binance(bs_url)
+        results["binance_spot"] = {
+            "ok": bs is not None,
+            "count": len(bs) if isinstance(bs, list) else (1 if bs else 0)
+        }
+    except Exception as e:
+        results["binance_spot"] = {"ok": False, "error": str(e)}
+
+    return jsonify({
+        "status": "ok",
+        "service": "crypto-scorer",
+        "version": "5.1-safe-multisource-bybit-debug",
+        "providers": results
+    })
+
+
 # ─── HEALTH ───────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.0-safe-batch-dynamic-late-risk-market-danger"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.1-safe-multisource-bybit-debug"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
