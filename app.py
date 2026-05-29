@@ -110,41 +110,122 @@ def fetch_binance(url):
                 return None
     return None
 
+def normalize_bybit_ticker(t):
+    """Convertit un ticker Bybit v5 linear vers le format interne type Binance."""
+    try:
+        price_change_pct = float(t.get("price24hPcnt", 0)) * 100
+    except Exception:
+        price_change_pct = 0.0
+    return {
+        "symbol": t.get("symbol", ""),
+        "priceChangePercent": str(round(price_change_pct, 6)),
+        "quoteVolume": str(t.get("turnover24h", 0)),
+        "volume": str(t.get("volume24h", 0)),
+        "highPrice": str(t.get("highPrice24h", 0)),
+        "lowPrice": str(t.get("lowPrice24h", 0)),
+        "lastPrice": str(t.get("lastPrice", 0)),
+    }
+
+def fetch_bybit_linear_tickers(symbols=None):
+    """Récupère les tickers Bybit USDT perpetual et les normalise."""
+    url = "https://api.bybit.com/v5/market/tickers?category=linear"
+    data = fetch_binance(url)
+    if not data or data.get("retCode") != 0:
+        return None
+    items = data.get("result", {}).get("list", [])
+    wanted = {normalize_symbol(s) for s in symbols} if symbols else None
+    out = []
+    for t in items:
+        sym = normalize_symbol(t.get("symbol", ""))
+        if wanted and sym not in wanted:
+            continue
+        if not is_tradeable_usdt_symbol(sym):
+            continue
+        nt = normalize_bybit_ticker(t)
+        if nt.get("symbol"):
+            out.append(nt)
+    return out
+
+def bybit_interval(interval):
+    mapping = {
+        "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+        "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+        "1d": "D"
+    }
+    return mapping.get(interval, "60")
+
+def get_bybit_klines(symbol, interval="1h", limit=100):
+    url = (
+        "https://api.bybit.com/v5/market/kline"
+        f"?category=linear&symbol={symbol}&interval={bybit_interval(interval)}&limit={limit}"
+    )
+    data = fetch_binance(url)
+    if not data or data.get("retCode") != 0:
+        return None
+    rows = data.get("result", {}).get("list", [])
+    if not rows:
+        return None
+    # Bybit renvoie souvent les bougies de la plus récente à la plus ancienne.
+    rows = sorted(rows, key=lambda x: int(x[0]))
+    out = []
+    for r in rows:
+        # Format Bybit: [startTime, open, high, low, close, volume, turnover]
+        # Format interne compatible Binance: indices 2/3/4/5 utilisés plus bas.
+        out.append([r[0], r[1], r[2], r[3], r[4], r[5]])
+    return out
+
 def get_klines(symbol, interval="1h", limit=100):
     """
-    Retourne les chandeliers + la source utilisée.
+    Retourne les chandeliers + source.
     Priorité : Binance Futures.
-    Fallback : Binance Spot si Futures inaccessible depuis l'hébergement.
+    Fallback 1 : Bybit Futures linear.
+    Fallback 2 : Binance Spot, puis Binance Vision Spot.
     """
     url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    url_spot    = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-
     result = fetch_binance(url_futures)
     if result is not None:
         return result, "FUTURES"
 
-    result = fetch_binance(url_spot)
+    result = get_bybit_klines(symbol, interval, limit)
     if result is not None:
-        return result, "SPOT_FALLBACK"
+        return result, "BYBIT_FUTURES"
+
+    spot_endpoints = [
+        "https://data-api.binance.vision/api/v3/klines",
+        "https://api.binance.com/api/v3/klines",
+    ]
+    for base in spot_endpoints:
+        url_spot = f"{base}?symbol={symbol}&interval={interval}&limit={limit}"
+        result = fetch_binance(url_spot)
+        if result is not None:
+            return result, "SPOT_FALLBACK"
 
     return None, "UNAVAILABLE"
 
 def get_funding_rate(symbol, data_source="FUTURES"):
-    """
-    Retourne (funding_rate, disponible).
-    Le funding n'existe que sur Futures : si les klines viennent du Spot
-    (Futures injoignable), on n'interroge pas et on signale l'indisponibilité
-    plutôt que de renvoyer 0 faussement "neutre".
-    """
-    if data_source != "FUTURES":
+    """Retourne (funding_rate, disponible) pour Binance Futures ou Bybit Futures."""
+    if data_source == "FUTURES":
+        try:
+            url  = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1"
+            data = fetch_binance(url)
+            if data and len(data) > 0:
+                return float(data[0].get("fundingRate", 0)), True
+        except Exception as e:
+            logger.warning("get_funding_rate Binance échec %s: %s", symbol, e)
         return 0.0, False
-    try:
-        url  = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1"
-        data = fetch_binance(url)
-        if data and len(data) > 0:
-            return float(data[0].get("fundingRate", 0)), True
-    except Exception as e:
-        logger.warning("get_funding_rate échec %s: %s", symbol, e)
+
+    if data_source == "BYBIT_FUTURES":
+        try:
+            url = f"https://api.bybit.com/v5/market/funding/history?category=linear&symbol={symbol}&limit=1"
+            data = fetch_binance(url)
+            if data and data.get("retCode") == 0:
+                rows = data.get("result", {}).get("list", [])
+                if rows:
+                    return float(rows[0].get("fundingRate", 0)), True
+        except Exception as e:
+            logger.warning("get_funding_rate Bybit échec %s: %s", symbol, e)
+        return 0.0, False
+
     return 0.0, False
 
 def interpret_funding(funding_rate, direction, available=True):
@@ -367,14 +448,12 @@ def build_batch_ticker_url(base_url, symbols):
 
 def get_dynamic_tickers(symbols_config=None):
     """
-    V5 SAFE : universe élargi mais contrôlé.
-    Pourquoi : sur Railway, l'appel full market Binance peut échouer / timeout.
-    Donc on n'appelle plus /ticker/24hr complet ; on interroge uniquement une
-    watchlist élargie par batch, d'abord Futures puis Spot fallback.
+    V5 SAFE PROVIDER : universe contrôlé avec fallback futures multi-source.
+    Ordre : Binance Futures batch -> Bybit Futures linear -> Binance Vision Spot -> Binance Spot.
+    Objectif : ne plus dépendre d'une seule IP Railway -> Binance.
     """
     symbols_config = symbols_config or []
 
-    # Déduplication propre en conservant l'ordre + filtre USDT tradable.
     seen = set()
     symbols = []
     for sym in symbols_config:
@@ -389,12 +468,8 @@ def get_dynamic_tickers(symbols_config=None):
     if not symbols:
         return [], "UNAVAILABLE"
 
-    futures_base = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-    spot_base    = "https://api.binance.com/api/v3/ticker/24hr"
-
-    def fetch_batches(base_url):
+    def fetch_binance_batches(base_url):
         out = []
-        # batch raisonnable pour éviter URL trop longue / timeout
         for batch in chunked(symbols, 40):
             url = build_batch_ticker_url(base_url, batch)
             data = fetch_binance(url)
@@ -405,12 +480,22 @@ def get_dynamic_tickers(symbols_config=None):
             out.extend(data)
         return out
 
-    tickers = fetch_batches(futures_base)
-    data_source = "FUTURES"
+    providers = [
+        ("FUTURES", lambda: fetch_binance_batches("https://fapi.binance.com/fapi/v1/ticker/24hr")),
+        ("BYBIT_FUTURES", lambda: fetch_bybit_linear_tickers(symbols)),
+        ("SPOT_FALLBACK", lambda: fetch_binance_batches("https://data-api.binance.vision/api/v3/ticker/24hr")),
+        ("SPOT_FALLBACK", lambda: fetch_binance_batches("https://api.binance.com/api/v3/ticker/24hr")),
+    ]
 
-    if tickers is None:
-        tickers = fetch_batches(spot_base)
-        data_source = "SPOT_FALLBACK"
+    tickers = None
+    data_source = "UNAVAILABLE"
+    for source, fn in providers:
+        tickers = fn()
+        if tickers:
+            data_source = source
+            logger.info("Ticker provider OK: %s (%s tickers)", source, len(tickers))
+            break
+        logger.warning("Ticker provider KO: %s", source)
 
     if not tickers:
         return [], "UNAVAILABLE"
@@ -427,14 +512,11 @@ def get_dynamic_tickers(symbols_config=None):
             continue
         if last_price <= 0:
             continue
-        # On conserve les Tier 1 même si volume calme.
         if volume < MIN_QUOTE_VOLUME_USDT and symbol not in TIER1_ALWAYS:
             continue
         filtered.append(t)
 
-    # Liquidity first + cap de sécurité.
     filtered.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-
     selected = {normalize_symbol(t.get("symbol")): t for t in filtered[:MAX_DYNAMIC_UNIVERSE]}
     all_by_symbol = {normalize_symbol(t.get("symbol")): t for t in tickers if normalize_symbol(t.get("symbol"))}
     for sym in TIER1_ALWAYS:
@@ -1357,7 +1439,9 @@ def full_analysis():
         data_sources_used = {data_source_batch, btc_data_source}
         data_sources_used.update([r.get("data_source", "UNAVAILABLE") for r in results])
         data_source_run = "SPOT_FALLBACK" if "SPOT_FALLBACK" in data_sources_used else (
-            "FUTURES" if "FUTURES" in data_sources_used else "UNAVAILABLE"
+            "BYBIT_FUTURES" if "BYBIT_FUTURES" in data_sources_used else (
+                "FUTURES" if "FUTURES" in data_sources_used else "UNAVAILABLE"
+            )
         )
 
         # CANDIDAT = vrai signal. On bloque les late risk HIGH.
