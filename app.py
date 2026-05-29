@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import numpy as np
 import urllib.request
 import urllib.parse
+import urllib.error
 import json
 import time
 import os
@@ -24,6 +25,20 @@ _COOLDOWN_LOCK = threading.Lock()
 
 # Parallélisme des appels réseau par symbole.
 MAX_WORKERS = 8
+
+# ─── SOURCES DE DONNÉES ─────────────────────────────────────────────────────────
+# Binance (fapi/api .binance.com) est bloqué (HTTP 451) depuis beaucoup d'IP cloud
+# (Railway, Render, Vercel...). On le désactive par défaut pour échouer vite et
+# basculer immédiatement sur Bybit. Réactivable via variable d'environnement si on
+# héberge ailleurs ou derrière un proxy à IP statique.
+#   BINANCE_ENABLED=true            -> retente Binance en premier
+#   DATA_SOURCE_ORDER=bybit,binance -> ordre explicite (sinon défaut ci-dessous)
+BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "false").lower() == "true"
+
+# Timeout court : sur une source bloquée, on veut échouer en quelques secondes,
+# pas attendre 3×15s par symbole.
+HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
+HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
 # ─── CONFIG V5 ────────────────────────────────────────────────────────────────
 # SAFE_MODE=True = conserve une logique prudente tant que Binance Futures reste instable.
@@ -96,17 +111,27 @@ def set_cooldown_symbols(symbols):
 
 def fetch_binance(url):
     last_err = None
-    for attempt in range(3):
+    for attempt in range(HTTP_RETRIES):
         try:
             req = urllib.request.Request(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             })
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
                 return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # 451 = bloqué par localisation. Inutile de retenter : on échoue tout de suite.
+            if e.code in (451, 403):
+                logger.warning("fetch échec %s: HTTP %s (bloqué) — pas de retry",
+                               url.split("?")[0], e.code)
+                return None
+            if attempt == HTTP_RETRIES - 1:
+                logger.warning("fetch échec %s: HTTP %s", url.split("?")[0], e.code)
+                return None
         except Exception as e:
             last_err = e
-            if attempt == 2:
-                logger.warning("fetch_binance échec (%s): %s", url.split("?")[0], last_err)
+            if attempt == HTTP_RETRIES - 1:
+                logger.warning("fetch échec %s: %s", url.split("?")[0], last_err)
                 return None
     return None
 
@@ -177,14 +202,15 @@ def get_bybit_klines(symbol, interval="1h", limit=100):
 def get_klines(symbol, interval="1h", limit=100):
     """
     Retourne les chandeliers + source.
-    Priorité : Binance Futures.
-    Fallback 1 : Bybit Futures linear.
-    Fallback 2 : Binance Spot, puis Binance Vision Spot.
+    Par défaut Bybit Futures est tenté en premier (Binance bloqué 451 sur cloud).
+    Binance Futures n'est tenté que si BINANCE_ENABLED=true.
+    Dernier recours : Binance Vision Spot (souvent non bloqué) puis Binance Spot.
     """
-    url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    result = fetch_binance(url_futures)
-    if result is not None:
-        return result, "FUTURES"
+    if BINANCE_ENABLED:
+        url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        result = fetch_binance(url_futures)
+        if result is not None:
+            return result, "FUTURES"
 
     result = get_bybit_klines(symbol, interval, limit)
     if result is not None:
@@ -192,8 +218,9 @@ def get_klines(symbol, interval="1h", limit=100):
 
     spot_endpoints = [
         "https://data-api.binance.vision/api/v3/klines",
-        "https://api.binance.com/api/v3/klines",
     ]
+    if BINANCE_ENABLED:
+        spot_endpoints.append("https://api.binance.com/api/v3/klines")
     for base in spot_endpoints:
         url_spot = f"{base}?symbol={symbol}&interval={interval}&limit={limit}"
         result = fetch_binance(url_spot)
@@ -480,12 +507,13 @@ def get_dynamic_tickers(symbols_config=None):
             out.extend(data)
         return out
 
-    providers = [
-        ("FUTURES", lambda: fetch_binance_batches("https://fapi.binance.com/fapi/v1/ticker/24hr")),
-        ("BYBIT_FUTURES", lambda: fetch_bybit_linear_tickers(symbols)),
-        ("SPOT_FALLBACK", lambda: fetch_binance_batches("https://data-api.binance.vision/api/v3/ticker/24hr")),
-        ("SPOT_FALLBACK", lambda: fetch_binance_batches("https://api.binance.com/api/v3/ticker/24hr")),
-    ]
+    providers = []
+    if BINANCE_ENABLED:
+        providers.append(("FUTURES", lambda: fetch_binance_batches("https://fapi.binance.com/fapi/v1/ticker/24hr")))
+    providers.append(("BYBIT_FUTURES", lambda: fetch_bybit_linear_tickers(symbols)))
+    providers.append(("SPOT_FALLBACK", lambda: fetch_binance_batches("https://data-api.binance.vision/api/v3/ticker/24hr")))
+    if BINANCE_ENABLED:
+        providers.append(("SPOT_FALLBACK", lambda: fetch_binance_batches("https://api.binance.com/api/v3/ticker/24hr")))
 
     tickers = None
     data_source = "UNAVAILABLE"
