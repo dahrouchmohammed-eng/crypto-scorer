@@ -27,16 +27,13 @@ _COOLDOWN_LOCK = threading.Lock()
 MAX_WORKERS = 8
 
 # ─── SOURCES DE DONNÉES ─────────────────────────────────────────────────────────
-# Binance (fapi/api .binance.com) est bloqué (HTTP 451) depuis beaucoup d'IP cloud
-# (Railway, Render, Vercel...). On le désactive par défaut pour échouer vite et
-# basculer immédiatement sur Bybit. Réactivable via variable d'environnement si on
-# héberge ailleurs ou derrière un proxy à IP statique.
-#   BINANCE_ENABLED=true            -> retente Binance en premier
-#   DATA_SOURCE_ORDER=bybit,binance -> ordre explicite (sinon défaut ci-dessous)
+# Binance (fapi/api .binance.com) est souvent bloqué (HTTP 451) depuis des IP cloud
+# comme Railway. On le désactive par défaut pour échouer vite et basculer sur Bybit
+# puis Binance Vision Spot. Réactivable via variable d'environnement :
+#   BINANCE_ENABLED=true
 BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "false").lower() == "true"
 
-# Timeout court : sur une source bloquée, on veut échouer en quelques secondes,
-# pas attendre 3×15s par symbole.
+# Timeouts courts : si une source est bloquée, on ne veut pas attendre longtemps.
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
@@ -120,7 +117,7 @@ def fetch_binance(url):
                 return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             last_err = e
-            # 451 = bloqué par localisation. Inutile de retenter : on échoue tout de suite.
+            # 451 = bloqué par localisation. 403 = bloqué/interdit. Inutile de retenter.
             if e.code in (451, 403):
                 logger.warning("fetch échec %s: HTTP %s (bloqué) — pas de retry",
                                url.split("?")[0], e.code)
@@ -202,9 +199,9 @@ def get_bybit_klines(symbol, interval="1h", limit=100):
 def get_klines(symbol, interval="1h", limit=100):
     """
     Retourne les chandeliers + source.
-    Par défaut Bybit Futures est tenté en premier (Binance bloqué 451 sur cloud).
-    Binance Futures n'est tenté que si BINANCE_ENABLED=true.
-    Dernier recours : Binance Vision Spot (souvent non bloqué) puis Binance Spot.
+    Par défaut Bybit Futures est tenté en premier car Binance est souvent bloqué
+    depuis Railway. Binance Futures n'est tenté que si BINANCE_ENABLED=true.
+    Dernier recours : Binance Vision Spot, puis Binance Spot si activé.
     """
     if BINANCE_ENABLED:
         url_futures = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -221,6 +218,7 @@ def get_klines(symbol, interval="1h", limit=100):
     ]
     if BINANCE_ENABLED:
         spot_endpoints.append("https://api.binance.com/api/v3/klines")
+
     for base in spot_endpoints:
         url_spot = f"{base}?symbol={symbol}&interval={interval}&limit={limit}"
         result = fetch_binance(url_spot)
@@ -496,16 +494,24 @@ def get_dynamic_tickers(symbols_config=None):
         return [], "UNAVAILABLE"
 
     def fetch_binance_batches(base_url):
+        # IMPORTANT : certains symbols de la liste futures n'existent pas en Spot Vision.
+        # Avant, un seul batch KO tuait tout le scan. Maintenant, on ignore le batch KO
+        # et on conserve les autres données valides.
         out = []
-        for batch in chunked(symbols, 40):
+        for batch in chunked(symbols, 20):
             url = build_batch_ticker_url(base_url, batch)
             data = fetch_binance(url)
+
             if data is None:
-                return None
+                logger.warning("Batch KO sur %s avec %s symboles: %s", base_url, len(batch), batch)
+                continue
+
             if isinstance(data, dict):
                 data = [data]
+
             out.extend(data)
-        return out
+
+        return out if out else None
 
     providers = []
     if BINANCE_ENABLED:
@@ -1652,7 +1658,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.1-safe-multisource-bybit-debug",
+        "version": "5.2-safe-vision-batch-fix",
         "providers": results
     })
 
@@ -1661,7 +1667,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.1-safe-multisource-bybit-debug"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.2-safe-vision-batch-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
