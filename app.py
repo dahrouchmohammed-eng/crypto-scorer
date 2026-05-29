@@ -604,7 +604,7 @@ def limit_weak_candidates(candidates):
 
 def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_details=None):
     market_details = market_details or {}
-    klines, data_source = get_klines(symbol)
+    klines, data_source = get_klines(symbol, limit=200)
     if not klines or len(klines) < 55:
         return None
 
@@ -638,6 +638,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     low_24h        = min(lows[-24:]) if len(lows) >= 24 else min(lows)
     range_24h      = high_24h - low_24h
     position_range = round((current - low_24h) / range_24h, 3) if range_24h > 0 else 0.5
+
+    # Low 7 jours approximé sur chandeliers 1h.
+    # Si moins de 168 bougies sont disponibles, on utilise tout l'historique chargé.
+    lookback_7d = min(len(lows), 168)
+    low_7d = min(lows[-lookback_7d:]) if lookback_7d > 0 else low_24h
+    distance_low_7d_pct = round(((current - low_7d) / low_7d) * 100, 2) if low_7d > 0 else 999
 
     above_ema50 = current > ema50
     ema50_trend = "bullish" if above_ema50 else "bearish"
@@ -752,6 +758,24 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         direction,
         funding_available
     )
+
+    # ── SHORT FORBIDDEN GUARD v5.0-safe ─────────────────────────────────────
+    # Interdit les shorts quand le prix est déjà trop proche du bas de range
+    # et que le funding indique déjà des shorts crowded.
+    # Logique: éviter de shorter un actif déjà écrasé avec risque de squeeze/rebond.
+    short_forbidden = (
+        direction == "SHORT" and
+        position_range < 0.30 and
+        distance_low_7d_pct <= 3.0 and
+        funding_signal == "shorts crowded"
+    )
+    short_forbidden_reasons = []
+    if short_forbidden:
+        short_forbidden_reasons = [
+            "position_range<0.30",
+            "prix_proche_low_7d<=3%",
+            "shorts_crowded"
+        ]
 
     # ── SCORE MOMENTUM ───────────────────────────────────────────────────────
     if direction == "LONG":
@@ -906,6 +930,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if data_source == "SPOT_FALLBACK":
         global_score -= 8
 
+    # 12. SHORT interdit : pas de signal SHORT proche du plus bas 7j avec shorts crowded.
+    if short_forbidden:
+        global_score = min(global_score, 45)
+
     global_score = round(max(0, global_score), 1)
 
     # ── FLAG ─────────────────────────────────────────────────────────────────
@@ -919,6 +947,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if short_watch:
         # On ne short pas automatiquement : on transforme uniquement en surveillance.
         flag = "SHORT_WATCH"
+
+    if short_forbidden:
+        flag = "REJET"
 
     # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
 
@@ -1086,6 +1117,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "volume_relatif":  relative_vol,
         "distance_ema21":  distance_ema21,
         "position_range":  position_range,
+        "low_7d":          round(low_7d, 8),
+        "distance_low_7d_pct": distance_low_7d_pct,
+        "short_forbidden": short_forbidden,
+        "short_forbidden_reasons": short_forbidden_reasons,
         "momentum_24h":    price_change,
         "funding_rate":    funding_rate,
         "funding_signal":  funding_signal,
@@ -1405,6 +1440,8 @@ def full_analysis():
                 f"volume_relatif: {r['volume_relatif']} | atr_pct: {r['atr_pct']} | "
                 f"momentum_24h: {r['momentum_24h']} | momentum_1h: {r.get('momentum_1h')} | momentum_3h: {r.get('momentum_3h')} | "
                 f"distance_ema21: {r['distance_ema21']} | position_range: {r['position_range']} | "
+                f"low_7d: {r.get('low_7d')} | distance_low_7d_pct: {r.get('distance_low_7d_pct')} | "
+                f"short_forbidden: {r.get('short_forbidden')} | short_forbidden_reasons: {','.join(r.get('short_forbidden_reasons', []))} | "
                 f"late_entry_risk: {r.get('late_entry_risk')} | late_entry_level: {r.get('late_entry_level')} | "
                 f"late_entry_flags: {','.join(r.get('late_entry_flags', []))} | "
                 f"market_regime: {r['market_regime']} | market_danger_level: {r.get('market_danger_level')} | "
