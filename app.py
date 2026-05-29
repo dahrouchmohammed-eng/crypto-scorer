@@ -4,8 +4,44 @@ import urllib.request
 import json
 import time
 import os
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger("crypto-scorer")
 
 app = Flask(__name__)
+
+# Verrou process-local pour les accès au fichier cooldown.
+# (protège contre la concurrence intra-process / multi-thread ;
+#  pour du multi-process gunicorn, voir note dans save_cooldown)
+_COOLDOWN_LOCK = threading.Lock()
+
+# Parallélisme des appels réseau par symbole.
+MAX_WORKERS = 8
+
+# ─── CONFIG V5 ────────────────────────────────────────────────────────────────
+# SAFE_MODE=True = conserve une logique prudente tant que Binance Futures reste instable.
+SAFE_MODE = True
+
+# Universe dynamique : on part de toutes les paires USDT disponibles via ticker 24h,
+# puis on garde uniquement les plus liquides / actives.
+MAX_DYNAMIC_UNIVERSE = 90
+MAX_FULL_ANALYSIS_CANDIDATES = 18
+MIN_QUOTE_VOLUME_USDT = 15_000_000
+
+TIER1_ALWAYS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"]
+EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
+EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT"}
+
+# Classes d'actifs pour SL / levier (factorisé : était dupliqué dans score_symbol)
+MEMECOINS = {"DOGEUSDT", "WIFUSDT", "PEPEUSDT", "BONKUSDT", "FLOKIUSDT", "BOMEUSDT"}
+MAJORS    = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+
 
 # ─── COOLDOWN ─────────────────────────────────────────────────────────────────
 # Cooldown déclenché APRÈS envoi Telegram via /set_cooldown
@@ -19,19 +55,26 @@ def load_cooldown():
         if os.path.exists(COOLDOWN_FILE):
             with open(COOLDOWN_FILE, "r") as f:
                 return json.load(f)
-    except:
-        pass
+    except Exception as e:
+        logger.warning("load_cooldown a échoué: %s", e)
     return {}
 
 def save_cooldown(data):
+    # Écriture atomique : on écrit dans un fichier temporaire puis os.replace,
+    # ce qui évite un fichier JSON tronqué/corrompu en cas d'interruption.
+    # NB: pour du multi-process (gunicorn -w N), envisager un store partagé
+    # (Redis) car ce verrou est local au process.
     try:
-        with open(COOLDOWN_FILE, "w") as f:
+        tmp = COOLDOWN_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(data, f)
-    except:
-        pass
+        os.replace(tmp, COOLDOWN_FILE)
+    except Exception as e:
+        logger.warning("save_cooldown a échoué: %s", e)
 
 def is_on_cooldown(symbol):
-    cooldown = load_cooldown()
+    with _COOLDOWN_LOCK:
+        cooldown = load_cooldown()
     if symbol in cooldown:
         elapsed = time.time() - cooldown[symbol]
         if elapsed < COOLDOWN_SECONDS:
@@ -40,16 +83,18 @@ def is_on_cooldown(symbol):
     return False, 0
 
 def set_cooldown_symbols(symbols):
-    cooldown = load_cooldown()
-    now = time.time()
-    for symbol in symbols:
-        cooldown[symbol] = now
-    cooldown = {k: v for k, v in cooldown.items() if time.time() - v < COOLDOWN_SECONDS}
-    save_cooldown(cooldown)
+    with _COOLDOWN_LOCK:
+        cooldown = load_cooldown()
+        now = time.time()
+        for symbol in symbols:
+            cooldown[symbol] = now
+        cooldown = {k: v for k, v in cooldown.items() if now - v < COOLDOWN_SECONDS}
+        save_cooldown(cooldown)
 
 # ─── BINANCE API ──────────────────────────────────────────────────────────────
 
 def fetch_binance(url):
+    last_err = None
     for attempt in range(3):
         try:
             req = urllib.request.Request(url, headers={
@@ -58,7 +103,9 @@ def fetch_binance(url):
             with urllib.request.urlopen(req, timeout=15) as r:
                 return json.loads(r.read().decode())
         except Exception as e:
+            last_err = e
             if attempt == 2:
+                logger.warning("fetch_binance échec (%s): %s", url.split("?")[0], last_err)
                 return None
     return None
 
@@ -81,23 +128,35 @@ def get_klines(symbol, interval="1h", limit=100):
 
     return None, "UNAVAILABLE"
 
-def get_funding_rate(symbol):
+def get_funding_rate(symbol, data_source="FUTURES"):
+    """
+    Retourne (funding_rate, disponible).
+    Le funding n'existe que sur Futures : si les klines viennent du Spot
+    (Futures injoignable), on n'interroge pas et on signale l'indisponibilité
+    plutôt que de renvoyer 0 faussement "neutre".
+    """
+    if data_source != "FUTURES":
+        return 0.0, False
     try:
         url  = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1"
         data = fetch_binance(url)
         if data and len(data) > 0:
-            return float(data[0].get("fundingRate", 0))
-    except:
-        pass
-    return 0.0
+            return float(data[0].get("fundingRate", 0)), True
+    except Exception as e:
+        logger.warning("get_funding_rate échec %s: %s", symbol, e)
+    return 0.0, False
 
-def interpret_funding(funding_rate, direction):
+def interpret_funding(funding_rate, direction, available=True):
     """
     Interprétation simple du funding futures.
     Funding positif élevé  : longs crowded.
     Funding négatif élevé  : shorts crowded.
     La lecture dépend de la direction du trade.
+    Si le funding est indisponible (source spot), on ne déduit rien.
     """
+    if not available or funding_rate is None:
+        return "unavailable", "neutral", "funding indisponible (source spot)", 0
+
     if funding_rate is None:
         funding_rate = 0.0
 
@@ -192,9 +251,25 @@ def calculate_relative_volume(volumes, period=20):
         return 0
     return round(volumes[-1] / avg, 2)
 
-def detect_market_regime(btc_klines):
+def detect_market_regime(btc_klines, return_details=False):
+    """
+    Régime BTC enrichi V4.7/V5.
+    Retour simple par défaut pour compatibilité.
+    Si return_details=True, retourne (regime, details).
+    """
+    empty = {
+        "market_danger_score": 50,
+        "market_danger_level": "UNKNOWN",
+        "btc_rsi": 50,
+        "btc_atr_pct": 0,
+        "btc_variation_2h": 0,
+        "btc_variation_4h": 0,
+        "btc_variation_12h": 0,
+        "btc_note": "données BTC insuffisantes"
+    }
     if not btc_klines or len(btc_klines) < 30:
-        return "unknown"
+        return ("unknown", empty) if return_details else "unknown"
+
     closes  = [float(k[4]) for k in btc_klines]
     highs   = [float(k[2]) for k in btc_klines]
     lows    = [float(k[3]) for k in btc_klines]
@@ -204,17 +279,263 @@ def detect_market_regime(btc_klines):
     atr     = calculate_atr(highs, lows, closes)
     current = closes[-1]
 
-    atr_pct      = (atr / current) * 100 if current > 0 else 0
-    variation_2h = abs((closes[-1] - closes[-3]) / closes[-3] * 100) if len(closes) >= 3 else 0
-    variation_4h = abs((closes[-1] - closes[-5]) / closes[-5] * 100) if len(closes) >= 5 else 0
+    atr_pct       = (atr / current) * 100 if current > 0 else 0
+    variation_2h  = ((closes[-1] - closes[-3]) / closes[-3] * 100) if len(closes) >= 3 and closes[-3] > 0 else 0
+    variation_4h  = ((closes[-1] - closes[-5]) / closes[-5] * 100) if len(closes) >= 5 and closes[-5] > 0 else 0
+    variation_12h = ((closes[-1] - closes[-13]) / closes[-13] * 100) if len(closes) >= 13 and closes[-13] > 0 else 0
 
-    if atr_pct > 4 or variation_2h > 3 or variation_4h > 5:
-        return "volatile"
-    if current > ema9 > ema21 and rsi > 50:
-        return "bullish"
+    danger_score = 0
+    danger_reasons = []
+
+    if atr_pct > 2.5:
+        danger_score += 20
+        danger_reasons.append("BTC ATR élevé")
+    if atr_pct > 4.0:
+        danger_score += 20
+        danger_reasons.append("BTC ATR extrême")
+    if abs(variation_2h) > 2.0:
+        danger_score += 20
+        danger_reasons.append("variation BTC 2h forte")
+    if abs(variation_4h) > 3.5:
+        danger_score += 20
+        danger_reasons.append("variation BTC 4h forte")
+    if abs(variation_12h) > 6.0:
+        danger_score += 15
+        danger_reasons.append("extension BTC 12h")
+    if rsi > 78 or rsi < 22:
+        danger_score += 15
+        danger_reasons.append("RSI BTC extrême")
+
+    danger_score = min(100, danger_score)
+    if danger_score >= 60:
+        danger_level = "HIGH"
+    elif danger_score >= 30:
+        danger_level = "MEDIUM"
+    else:
+        danger_level = "LOW"
+
+    if danger_score >= 70:
+        regime = "danger"
+    elif atr_pct > 4 or abs(variation_2h) > 3 or abs(variation_4h) > 5:
+        regime = "volatile"
+    elif current > ema9 > ema21 and rsi > 50:
+        regime = "bullish"
     elif current < ema9 < ema21 and rsi < 50:
-        return "bearish"
-    return "neutral"
+        regime = "bearish"
+    else:
+        regime = "neutral"
+
+    details = {
+        "market_danger_score": round(danger_score, 1),
+        "market_danger_level": danger_level,
+        "btc_rsi": rsi,
+        "btc_atr_pct": round(atr_pct, 2),
+        "btc_variation_2h": round(variation_2h, 2),
+        "btc_variation_4h": round(variation_4h, 2),
+        "btc_variation_12h": round(variation_12h, 2),
+        "btc_note": ", ".join(danger_reasons) if danger_reasons else "BTC stable"
+    }
+    return (regime, details) if return_details else regime
+
+
+def normalize_symbol(symbol):
+    return str(symbol or "").upper().strip()
+
+
+def is_tradeable_usdt_symbol(symbol):
+    symbol = normalize_symbol(symbol)
+    if not symbol.endswith("USDT"):
+        return False
+    if symbol in EXCLUDED_SYMBOLS:
+        return False
+    if symbol.endswith(EXCLUDED_SUFFIXES):
+        return False
+    return True
+
+
+def get_dynamic_tickers(symbols_config=None):
+    """
+    V5 lite : watchlist dynamique.
+    - Essaie d'abord Binance Futures 24h complet.
+    - Fallback Spot complet si Futures inaccessible.
+    - Garde les paires USDT liquides + Tier 1.
+    - Si l'appel complet échoue, revient à l'ancienne liste fixe.
+    """
+    symbols_config = symbols_config or []
+
+    futures_url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+    spot_url    = "https://api.binance.com/api/v3/ticker/24hr"
+
+    tickers = fetch_binance(futures_url)
+    data_source = "FUTURES"
+    if tickers is None:
+        tickers = fetch_binance(spot_url)
+        data_source = "SPOT_FALLBACK"
+
+    if not tickers:
+        # fallback ancien mode : batch symbols fixes
+        batch_url_futures = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'\"{s}\"' for s in symbols_config]) + "]"
+        batch_url_spot    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'\"{s}\"' for s in symbols_config]) + "]"
+        tickers = fetch_binance(batch_url_futures)
+        data_source = "FUTURES"
+        if tickers is None:
+            tickers = fetch_binance(batch_url_spot)
+            data_source = "SPOT_FALLBACK"
+
+    if not tickers:
+        return [], "UNAVAILABLE"
+
+    filtered = []
+    for t in tickers:
+        symbol = normalize_symbol(t.get("symbol", ""))
+        if not is_tradeable_usdt_symbol(symbol):
+            continue
+        try:
+            volume = float(t.get("quoteVolume", 0))
+            last_price = float(t.get("lastPrice", 0))
+        except Exception:
+            continue
+        if last_price <= 0:
+            continue
+        if volume < MIN_QUOTE_VOLUME_USDT and symbol not in TIER1_ALWAYS:
+            continue
+        filtered.append(t)
+
+    # Liquidity first, but keep Tier 1 even if quiet.
+    filtered.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
+    selected = {normalize_symbol(t.get("symbol")): t for t in filtered[:MAX_DYNAMIC_UNIVERSE]}
+
+    # Force Tier 1 if present in fetched tickers.
+    all_by_symbol = {normalize_symbol(t.get("symbol")): t for t in tickers if normalize_symbol(t.get("symbol"))}
+    for sym in TIER1_ALWAYS:
+        if sym in all_by_symbol:
+            selected[sym] = all_by_symbol[sym]
+
+    return list(selected.values()), data_source
+
+
+def quick_late_entry_risk(price_change_pct, range_pct):
+    """Pré-filtre rapide basé ticker 24h avant chargement des klines."""
+    risk = 0
+    flags = []
+    abs_change = abs(price_change_pct)
+
+    if abs_change > 8:
+        risk += 10
+        flags.append("variation_24h_elevee")
+    if abs_change > 12:
+        risk += 15
+        flags.append("variation_24h_tres_elevee")
+    if abs_change > 18:
+        risk += 25
+        flags.append("variation_24h_extreme")
+    if range_pct > 10:
+        risk += 10
+        flags.append("range_24h_large")
+    if range_pct > 16:
+        risk += 15
+        flags.append("range_24h_extreme")
+
+    return min(100, risk), flags
+
+
+def detailed_late_entry_risk(direction, entry_type, closes, highs, lows, current, rsi, atr_pct, distance_ema21, position_range, price_change):
+    """
+    V4.6 : détecte les entrées tardives.
+    Important : overextended != short automatique. On peut produire SHORT_WATCH plus bas.
+    """
+    risk = 0
+    flags = []
+
+    if len(closes) >= 2 and closes[-2] > 0:
+        change_1h = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+    else:
+        change_1h = 0
+    if len(closes) >= 4 and closes[-4] > 0:
+        change_3h = ((closes[-1] - closes[-4]) / closes[-4]) * 100
+    else:
+        change_3h = 0
+
+    last_changes = []
+    for i in range(-4, 0):
+        if len(closes) >= abs(i) + 1 and closes[i-1] > 0:
+            last_changes.append(((closes[i] - closes[i-1]) / closes[i-1]) * 100)
+
+    if direction == "LONG":
+        if price_change > 10: risk += 12; flags.append("pump_24h")
+        if price_change > 15: risk += 18; flags.append("pump_24h_extreme")
+        if change_1h > 3: risk += 15; flags.append("pump_1h")
+        if change_3h > 6: risk += 15; flags.append("pump_3h")
+        if len(last_changes) >= 3 and all(c > 1.2 for c in last_changes[-3:]):
+            risk += 15; flags.append("3_bougies_vertes")
+        if len(last_changes) >= 4 and all(c > 0.8 for c in last_changes[-4:]):
+            risk += 10; flags.append("4_bougies_vertes")
+        if rsi > 72: risk += 12; flags.append("rsi_surchauffe")
+        if rsi > 78: risk += 15; flags.append("rsi_extreme")
+        if position_range > 0.88: risk += 15; flags.append("proche_high_24h")
+    elif direction == "SHORT":
+        if price_change < -10: risk += 12; flags.append("dump_24h")
+        if price_change < -15: risk += 18; flags.append("dump_24h_extreme")
+        if change_1h < -3: risk += 15; flags.append("dump_1h")
+        if change_3h < -6: risk += 15; flags.append("dump_3h")
+        if len(last_changes) >= 3 and all(c < -1.2 for c in last_changes[-3:]):
+            risk += 15; flags.append("3_bougies_rouges")
+        if rsi < 28: risk += 12; flags.append("rsi_survendu")
+        if rsi < 22: risk += 15; flags.append("rsi_extreme")
+        if position_range < 0.12: risk += 15; flags.append("proche_low_24h")
+
+    if distance_ema21 > 3: risk += 8; flags.append("loin_ema21")
+    if distance_ema21 > 6: risk += 12; flags.append("tres_loin_ema21")
+    if atr_pct > 3.5: risk += 10; flags.append("atr_eleve")
+    if atr_pct > 5: risk += 15; flags.append("atr_extreme")
+
+    # Un breakout propre est autorisé à être un peu plus tendu, mais pas FOMO.
+    if entry_type == "BREAKOUT":
+        risk = max(0, risk - 8)
+    if entry_type == "EARLY":
+        risk = max(0, risk - 12)
+
+    if risk >= 70:
+        level = "HIGH"
+    elif risk >= 40:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return min(100, round(risk, 1)), level, flags, round(change_1h, 2), round(change_3h, 2)
+
+
+def detect_short_watch(direction, closes, highs, lows, volumes, rsi, ema9, ema21, current, relative_vol, late_entry_risk, position_range):
+    """
+    SHORT WATCH uniquement, pas de vrai signal short reversal automatique.
+    Objectif : signaler un momentum long potentiellement épuisé à observer.
+    """
+    if direction != "LONG" or late_entry_risk < 55 or len(closes) < 8:
+        return False, []
+
+    reasons = []
+    last_high = highs[-1]
+    prev_high = max(highs[-6:-1]) if len(highs) >= 6 else highs[-2]
+    upper_wick = (last_high - max(closes[-1], float(closes[-2]))) / current * 100 if current > 0 else 0
+
+    last_3_vol_avg = np.mean(volumes[-3:]) if len(volumes) >= 3 else volumes[-1]
+    prev_6_vol_avg = np.mean(volumes[-9:-3]) if len(volumes) >= 9 else last_3_vol_avg
+    volume_fading = prev_6_vol_avg > 0 and last_3_vol_avg < prev_6_vol_avg * 0.85
+
+    if upper_wick > 1.0:
+        reasons.append("mèche haute")
+    if current < ema9:
+        reasons.append("perte EMA9")
+    if ema9 < ema21:
+        reasons.append("EMA9 repasse sous EMA21")
+    if last_high <= prev_high and position_range > 0.80:
+        reasons.append("rejet proche résistance")
+    if volume_fading:
+        reasons.append("volume en baisse")
+    if rsi > 74:
+        reasons.append("RSI surchauffé")
+
+    return len(reasons) >= 3, reasons
 
 def limit_weak_candidates(candidates):
     """
@@ -248,13 +569,17 @@ def limit_weak_candidates(candidates):
 #        breakout_level, score breakout, levier breakout contrôlé
 # v4.5B1: funding intelligence simple, derivatives_bias/note,
 #         ajustement confiance et levier selon funding
+# v4.6 : late_entry_risk détaillé, anti-FOMO avant Telegram, SHORT_WATCH
+# v4.7 : market_danger_score BTC enrichi
+# v5.0 : universe dynamique + préfiltre tradability
 
-def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
+def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_details=None):
+    market_details = market_details or {}
     klines, data_source = get_klines(symbol)
     if not klines or len(klines) < 55:
         return None
 
-    funding_rate = get_funding_rate(symbol)
+    funding_rate, funding_available = get_funding_rate(symbol, data_source)
 
     closes  = [float(k[4]) for k in klines]
     highs   = [float(k[2]) for k in klines]
@@ -380,10 +705,23 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     else:
         entry_type = "NEUTRAL"
 
+    # ── LATE ENTRY RISK v4.6 ────────────────────────────────────────────────
+    late_entry_risk, late_entry_level, late_entry_flags, momentum_1h, momentum_3h = detailed_late_entry_risk(
+        direction, entry_type, closes, highs, lows, current, rsi, atr_pct,
+        distance_ema21, position_range, price_change
+    )
+
+    # SHORT WATCH = observation de retournement potentiel, pas signal SHORT automatique.
+    short_watch, short_watch_reasons = detect_short_watch(
+        direction, closes, highs, lows, volumes, rsi, ema9, ema21,
+        current, relative_vol, late_entry_risk, position_range
+    )
+
     # ── FUNDING INTELLIGENCE v4.5B1 ─────────────────────────────────────────
     funding_signal, derivatives_bias, derivatives_note, funding_conf_adj = interpret_funding(
         funding_rate,
-        direction
+        direction,
+        funding_available
     )
 
     # ── SCORE MOMENTUM ───────────────────────────────────────────────────────
@@ -500,11 +838,24 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if direction == "LONG"  and position_range > 0.88: global_score -= 15
     if direction == "SHORT" and position_range < 0.12: global_score -= 15
 
-    # 7. Direction NEUTRAL → plafonné à 45
+    # 7. Late Entry Risk Engine v4.6 — pénalité centrale anti-FOMO
+    if late_entry_risk >= 70:
+        global_score -= 30
+    elif late_entry_risk >= 55:
+        global_score -= 22
+    elif late_entry_risk >= 40:
+        global_score -= 12
+
+    # Si momentum déjà consommé et pas EARLY, on évite de transformer un pump en signal.
+    if late_entry_risk >= 65 and entry_type == "MOMENTUM":
+        global_score = min(global_score, 51)
+
+    # 8. Direction NEUTRAL → plafonné à 45
     if direction == "NEUTRAL":
         global_score = min(global_score, 45)
 
-    # 8. Market regime BTC
+    # 9. Market regime BTC
+    if market_regime == "danger":                           global_score -= 25
     if market_regime == "volatile":                         global_score -= 15
     if market_regime == "bearish" and direction == "LONG":  global_score -= 10
     if market_regime == "bullish" and direction == "SHORT": global_score -= 10
@@ -512,8 +863,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if market_regime == "bearish" and direction == "SHORT": global_score += 8
     if market_regime == "bullish" and direction == "LONG":  global_score += 8
 
-    # 9. Pénalité légère early entry (moins fiable que momentum)
+    market_danger_score = float(market_details.get("market_danger_score", 0) or 0)
+    market_danger_level = market_details.get("market_danger_level", "UNKNOWN")
+    if market_danger_level == "HIGH":
+        global_score -= 12
+    elif market_danger_level == "MEDIUM":
+        global_score -= 5
+
+    # 10. Pénalité légère early entry (moins fiable que momentum)
     if entry_type == "EARLY": global_score -= 5
+
+    # 11. SPOT FALLBACK : accepté temporairement, mais moins fiable pour futures.
+    if data_source == "SPOT_FALLBACK":
+        global_score -= 8
 
     global_score = round(max(0, global_score), 1)
 
@@ -524,6 +886,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         flag = "WATCHLIST"
     else:
         flag = "REJET"
+
+    if short_watch:
+        # On ne short pas automatiquement : on transforme uniquement en surveillance.
+        flag = "SHORT_WATCH"
 
     # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
 
@@ -551,10 +917,8 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     # Stop Loss
     # Important : SL calculé depuis entry_avg pour garantir un R/R cohérent avec TP2.
     # Avec TP2 = entry_avg ± 2×ATR, un SL à 1×ATR donne R/R ≈ 2.
-    memecoins = ["DOGEUSDT","WIFUSDT","PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"]
-    majors    = ["BTCUSDT","ETHUSDT","SOLUSDT"]
-    if symbol in memecoins:    sl_max_pct = 2.0
-    elif symbol in majors:     sl_max_pct = 4.0
+    if symbol in MEMECOINS:    sl_max_pct = 2.0
+    elif symbol in MAJORS:     sl_max_pct = 4.0
     else:                      sl_max_pct = 3.0
 
     if direction == "LONG":
@@ -593,18 +957,21 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     rr_valid    = risk_reward >= 2.0
 
     # Levier maximum
-    memecoins = ["DOGEUSDT","WIFUSDT","PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"]
-    majors    = ["BTCUSDT","ETHUSDT","SOLUSDT"]
-    if symbol in memecoins:    base_leverage = 5
-    elif symbol in majors:     base_leverage = 10
+    if symbol in MEMECOINS:    base_leverage = 5
+    elif symbol in MAJORS:     base_leverage = 10
     else:                      base_leverage = 7
 
     leverage_caps = [base_leverage]
     if trend_strength == "weak":    leverage_caps.append(3)
     if market_regime == "neutral":  leverage_caps.append(5)
     if market_regime == "volatile": leverage_caps.append(3)
+    if market_regime == "danger":   leverage_caps.append(2)
+    if market_danger_level == "HIGH": leverage_caps.append(2)
     if entry_type == "EARLY":       leverage_caps.append(3)
     if flag == "WATCHLIST":         leverage_caps.append(3)
+    if flag == "SHORT_WATCH":       leverage_caps.append(1)
+    if late_entry_risk >= 55:        leverage_caps.append(3)
+    if data_source == "SPOT_FALLBACK": leverage_caps.append(5)
     # Sécurité macro : réduire fortement le levier si le trade est contre le régime BTC
     if (market_regime == "bearish" and direction == "LONG") or \
        (market_regime == "bullish" and direction == "SHORT"):
@@ -628,7 +995,11 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     # Plafonds confiance
     if trend_strength == "weak": confidence = min(confidence, 68)
     if flag == "WATCHLIST":      confidence = min(confidence, 60)
-    confidence = round(max(45, min(88, confidence)), 1)
+    if flag == "SHORT_WATCH":    confidence = min(confidence, 55)
+    if data_source == "SPOT_FALLBACK": confidence = min(confidence, 72)
+    if late_entry_risk >= 55:     confidence = min(confidence, 62)
+    if market_danger_level == "HIGH": confidence = min(confidence, 60)
+    confidence = round(max(40, min(88, confidence)), 1)
 
     # Sécurité levier après calcul de la confiance finale :
     # - confiance < 60%  -> 3x maximum
@@ -645,6 +1016,13 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
     if entry_type == "BREAKOUT" and confidence < 70:
         max_leverage = min(max_leverage, 5)
 
+    if data_source == "SPOT_FALLBACK":
+        max_leverage = min(max_leverage, 5)
+    if late_entry_risk >= 55:
+        max_leverage = min(max_leverage, 3)
+    if market_danger_level == "HIGH":
+        max_leverage = min(max_leverage, 2)
+
     # Sécurité funding :
     # si le funding signale un crowded trade contre notre direction,
     # on évite les leviers agressifs.
@@ -658,6 +1036,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         duration_label = "6 à 24h"
     else:
         duration_label = "2 à 6h"
+
+    if data_source == "SPOT_FALLBACK" or late_entry_risk >= 55 or market_danger_level == "HIGH":
+        duration_label = "30 min à 4h"
 
     return {
         "symbol":          symbol,
@@ -681,6 +1062,15 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown"):
         "funding_signal":  funding_signal,
         "derivatives_bias": derivatives_bias,
         "derivatives_note": derivatives_note,
+        "late_entry_risk": late_entry_risk,
+        "late_entry_level": late_entry_level,
+        "late_entry_flags": late_entry_flags,
+        "momentum_1h":     momentum_1h,
+        "momentum_3h":     momentum_3h,
+        "market_danger_score": market_danger_score,
+        "market_danger_level": market_danger_level,
+        "short_watch":     short_watch,
+        "short_watch_reasons": short_watch_reasons,
         "current_price":   current,
         "data_source":     data_source,
         # ── Niveaux calculés par Python ──────────────────────────────────────
@@ -741,24 +1131,17 @@ def cooldown_status():
 @app.route("/full_analysis", methods=["POST"])
 def full_analysis():
     try:
+        # Liste fixe conservée en filet de sécurité si le scanner dynamique échoue.
         symbols_config = [
             "BTCUSDT","ETHUSDT","SOLUSDT","LINKUSDT","AVAXUSDT","INJUSDT","FETUSDT",
-            "RNDRUSDT","ARBUSDT","SUIUSDT","WLDUSDT","TIAUSDT","JUPUSDT","SEIUSDT",
+            "RENDERUSDT","ARBUSDT","SUIUSDT","WLDUSDT","TIAUSDT","JUPUSDT","SEIUSDT",
             "GMXUSDT","PENDLEUSDT","ETHFIUSDT","STRKUSDT","ALTUSDT","PIXELUSDT",
             "PORTALUSDT","MANTAUSDT","NEARUSDT","APTUSDT","DOGEUSDT","WIFUSDT",
             "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
         ]
 
-        # Essai Futures d'abord, fallback Spot si inaccessible
-        batch_url_futures = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
-        batch_url_spot    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'"{s}"' for s in symbols_config]) + "]"
-
-        data_source_batch = "FUTURES"
-        tickers_data = fetch_binance(batch_url_futures)
-
-        if tickers_data is None:
-            tickers_data = fetch_binance(batch_url_spot)
-            data_source_batch = "SPOT_FALLBACK"
+        # ── V5.0 : UNIVERSE DYNAMIQUE ───────────────────────────────────────
+        tickers_data, data_source_batch = get_dynamic_tickers(symbols_config)
 
         if not tickers_data:
             return jsonify({
@@ -769,129 +1152,222 @@ def full_analysis():
                 "error": "Binance unreachable"
             })
 
-        # ── DOUBLE PORTE PRESCORE v4.4 ────────────────────────────────────────
+        # ── Market regime BTC enrichi v4.7 ──────────────────────────────────
+        btc_klines, btc_data_source = get_klines("BTCUSDT", limit=80)
+        market_regime, market_details = detect_market_regime(btc_klines, return_details=True)
+
+        # ── PRESCORE v5 : tradability avant momentum brut ───────────────────
         scored = []
         for t in tickers_data:
-            symbol           = t.get("symbol", "")
-            price_change_pct = float(t.get("priceChangePercent", 0))
-            volume           = float(t.get("quoteVolume", 0))
-            high             = float(t.get("highPrice", 1))
-            low              = float(t.get("lowPrice",  1))
+            symbol = normalize_symbol(t.get("symbol", ""))
+            if not is_tradeable_usdt_symbol(symbol):
+                continue
 
-            if volume < 1_000_000:
+            try:
+                price_change_pct = float(t.get("priceChangePercent", 0))
+                volume           = float(t.get("quoteVolume", 0))
+                high             = float(t.get("highPrice", 1))
+                low              = float(t.get("lowPrice", 1))
+                last_price        = float(t.get("lastPrice", 0))
+            except Exception:
+                continue
+
+            if last_price <= 0:
+                continue
+            if volume < MIN_QUOTE_VOLUME_USDT and symbol not in TIER1_ALWAYS:
                 continue
 
             range_pct = ((high - low) / low) * 100 if low > 0 else 0
 
-            # Porte 1 : Momentum classique
-            momentum_gate = abs(price_change_pct) >= 2.0
-            # Porte 2 : Early setup — compression + range actif mais mouvement pas encore fort
-            early_gate    = abs(price_change_pct) < 2.0 and range_pct >= 1.5
+            # Porte 1 : momentum classique, mais pas uniquement la hausse brute.
+            momentum_gate = abs(price_change_pct) >= 2.0 and range_pct >= 1.2
+            # Porte 2 : early setup — compression + range actif mais mouvement pas encore trop fort.
+            early_gate = abs(price_change_pct) < 2.0 and range_pct >= 1.5
+            # Porte 3 : volatility/tradability — marché actif sans variation 24h énorme.
+            tradability_gate = abs(price_change_pct) < 6.0 and 2.0 <= range_pct <= 10.0 and volume >= 30_000_000
 
-            if not momentum_gate and not early_gate:
+            if not momentum_gate and not early_gate and not tradability_gate:
                 continue
 
-            mom_score    = min(100, (abs(price_change_pct) / 10) * 100)
-            vol_score    = min(100, (volume / 50_000_000) * 100)
-            range_score  = min(100, (range_pct / 8) * 100)
-            penalty      = 20 if abs(price_change_pct) > 15 else (10 if abs(price_change_pct) > 12 else 0)
-            # Bonus porte early pour compenser le faible momentum
-            early_bonus  = 10 if early_gate else 0
-            prescore_val = round(max(0, mom_score * 0.40 + vol_score * 0.35 + range_score * 0.25 - penalty + early_bonus), 1)
+            mom_score    = min(100, (abs(price_change_pct) / 8) * 100)
+            vol_score    = min(100, (volume / 80_000_000) * 100)
+            range_score  = min(100, (range_pct / 10) * 100)
+            liquidity_bonus = 8 if volume >= 100_000_000 else (4 if volume >= 50_000_000 else 0)
+            tier1_bonus = 5 if symbol in TIER1_ALWAYS else 0
+            early_bonus = 12 if early_gate else 0
+            tradability_bonus = 8 if tradability_gate else 0
 
-            scored.append({"symbol": symbol, "prescore": prescore_val, "ticker": t, "gate": "early" if early_gate else "momentum"})
+            late_quick_risk, late_quick_flags = quick_late_entry_risk(price_change_pct, range_pct)
+
+            # Changement clé : le prescore doit favoriser les actifs tradables,
+            # pas seulement les actifs déjà en feu.
+            prescore_val = round(max(0,
+                mom_score   * 0.30 +
+                vol_score   * 0.35 +
+                range_score * 0.20 +
+                liquidity_bonus + tier1_bonus + early_bonus + tradability_bonus -
+                late_quick_risk * 0.65
+            ), 1)
+
+            gate = "early" if early_gate else ("tradability" if tradability_gate else "momentum")
+            scored.append({
+                "symbol": symbol,
+                "prescore": prescore_val,
+                "ticker": t,
+                "gate": gate,
+                "late_quick_risk": late_quick_risk,
+                "late_quick_flags": late_quick_flags,
+                "volume": volume
+            })
 
         scored.sort(key=lambda x: x["prescore"], reverse=True)
-        # Double porte : garantir représentation des early setups
-        momentum_top = [x for x in scored if x["gate"] == "momentum"][:5]
-        early_top    = [x for x in scored if x["gate"] == "early"][:5]
-        top_candidates = momentum_top + early_top  # max 10 paires analysées
 
-        # Market regime BTC
-        btc_klines, btc_data_source = get_klines("BTCUSDT", limit=50)
-        market_regime = detect_market_regime(btc_klines)
+        # Représentation équilibrée : pas uniquement les top pumpers.
+        momentum_top    = [x for x in scored if x["gate"] == "momentum"][:7]
+        early_top       = [x for x in scored if x["gate"] == "early"][:6]
+        tradability_top = [x for x in scored if x["gate"] == "tradability"][:5]
 
-        # Scoring complet avec filtre cooldown (lecture seule)
-        results          = []
+        # Déduplication en conservant l'ordre.
+        seen = set()
+        top_candidates = []
+        for item in momentum_top + early_top + tradability_top + scored[:MAX_FULL_ANALYSIS_CANDIDATES]:
+            if item["symbol"] in seen:
+                continue
+            seen.add(item["symbol"])
+            top_candidates.append(item)
+            if len(top_candidates) >= MAX_FULL_ANALYSIS_CANDIDATES:
+                break
+
+        # ── Scoring complet avec filtre cooldown (parallélisé) ──────────────
+        results = []
         cooldown_skipped = []
+        to_score = []
         for item in top_candidates:
             on_cd, remaining = is_on_cooldown(item["symbol"])
             if on_cd:
                 cooldown_skipped.append(f"{item['symbol']} ({remaining}h)")
                 continue
-            result = score_symbol(item["symbol"], item["ticker"], market_regime)
+            to_score.append(item)
+
+        def _score_item(item):
+            result = score_symbol(item["symbol"], item["ticker"], market_regime, market_details)
             if result:
-                results.append(result)
+                result["prescore"] = item.get("prescore")
+                result["prescore_gate"] = item.get("gate")
+                result["late_quick_risk"] = item.get("late_quick_risk")
+            return result
 
-        results.sort(key=lambda x: x["score"], reverse=True)
+        # Chaque score_symbol fait 2 appels réseau séquentiels ; les exécuter
+        # en parallèle réduit fortement la latence totale du scan.
+        if to_score:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {executor.submit(_score_item, item): item for item in to_score}
+                for fut in as_completed(futures):
+                    try:
+                        result = fut.result()
+                    except Exception as e:
+                        sym = futures[fut].get("symbol", "?")
+                        logger.warning("score_symbol échec %s: %s", sym, e)
+                        continue
+                    if result:
+                        results.append(result)
 
-        # Source utilisée pour le run :
-        # - FUTURES si ticker + klines sont futures
-        # - SPOT_FALLBACK si au moins une étape a basculé sur Spot
+        # Score final : priorité au score complet puis faible late_entry_risk.
+        results.sort(key=lambda x: (x["score"], -x.get("late_entry_risk", 0)), reverse=True)
+
         data_sources_used = {data_source_batch, btc_data_source}
         data_sources_used.update([r.get("data_source", "UNAVAILABLE") for r in results])
         data_source_run = "SPOT_FALLBACK" if "SPOT_FALLBACK" in data_sources_used else (
             "FUTURES" if "FUTURES" in data_sources_used else "UNAVAILABLE"
         )
 
+        # CANDIDAT = vrai signal. On bloque les late risk HIGH.
         candidats = [
             r for r in results
             if r["flag"] == "CANDIDAT"
             and r["rr_valid"]
             and r["direction"] != "NEUTRAL"
+            and r.get("late_entry_level") != "HIGH"
+            and r.get("market_danger_level") != "HIGH"
         ]
         candidats = limit_weak_candidates(candidats)
 
-        # Sécurité forte côté Python :
-        # si le meilleur candidat est weak, ne jamais envoyer de TOP 2 à GPT.
         if candidats and candidats[0].get("trend_strength") == "weak":
             candidats = candidats[:1]
 
-        # Fallback : si aucun CANDIDAT valide en R/R, envoyer la meilleure WATCHLIST à GPT
-        # GPT la traitera avec règles strictes (confiance max 60%, levier 3x)
         watchlist_fallback = False
+        short_watch_fallback = False
+
         if not candidats:
             watchlist = [
                 r for r in results
                 if r["flag"] == "WATCHLIST"
                 and r["rr_valid"]
                 and r["direction"] != "NEUTRAL"
+                and r.get("late_entry_level") != "HIGH"
             ]
             watchlist = limit_weak_candidates(watchlist)
-
-            # Même sécurité : si la meilleure WATCHLIST est weak, TOP 1 uniquement.
             if watchlist and watchlist[0].get("trend_strength") == "weak":
                 watchlist = watchlist[:1]
-
             if watchlist:
                 candidats = watchlist[:1]
                 watchlist_fallback = True
+
+        # SHORT WATCH : seulement si aucun vrai candidat. Observation, pas trade automatique.
+        if not candidats:
+            short_watch = [r for r in results if r.get("flag") == "SHORT_WATCH"]
+            short_watch.sort(key=lambda x: x.get("late_entry_risk", 0), reverse=True)
+            if short_watch:
+                candidats = short_watch[:1]
+                short_watch_fallback = True
 
         if not candidats:
             return jsonify({
                 "text":             "SKIP",
                 "count":            0,
                 "market_regime":    market_regime,
+                "market_danger":    market_details,
                 "data_source":      data_source_run,
+                "universe_size":    len(tickers_data),
+                "analyzed_count":   len(top_candidates),
                 "cooldown_skipped": cooldown_skipped
             })
 
-        # Formatage texte pour GPT — niveaux précalculés par Python
-        fallback_note = "\n⚠️ MODE WATCHLIST : aucun CANDIDAT disponible. Signal de calibration uniquement.\n" if watchlist_fallback else ""
-        lines = [f"market_regime_btc: {market_regime}\ndata_source: {data_source_run}\n{fallback_note}"]
+        # Formatage texte pour GPT — niveaux précalculés par Python.
+        fallback_note = ""
+        if watchlist_fallback:
+            fallback_note = "\n⚠️ MODE WATCHLIST : aucun CANDIDAT disponible. Signal de calibration uniquement.\n"
+        if short_watch_fallback:
+            fallback_note = "\n🔴 MODE SHORT_WATCH : momentum potentiellement épuisé. Observation uniquement, pas de short automatique.\n"
+
+        lines = [
+            f"market_regime_btc: {market_regime}\n"
+            f"market_danger_level: {market_details.get('market_danger_level')} | "
+            f"market_danger_score: {market_details.get('market_danger_score')} | "
+            f"btc_note: {market_details.get('btc_note')}\n"
+            f"data_source: {data_source_run}\n"
+            f"universe_size: {len(tickers_data)} | analyzed_count: {len(top_candidates)}\n"
+            f"{fallback_note}"
+        ]
+
         for r in candidats:
             lines.append(
                 f"symbol: {r['symbol']} | flag: {r['flag']} | score: {r['score']} | "
+                f"prescore: {r.get('prescore')} | gate: {r.get('prescore_gate')} | "
                 f"direction: {r['direction']} | entry_type: {r['entry_type']} | "
                 f"breakout_level: {r.get('breakout_level')} | "
                 f"trend_strength: {r['trend_strength']} | rsi: {r['rsi']} | "
                 f"ema_spread: {r['ema_spread']} | ema50_trend: {r['ema50_trend']} | "
                 f"volume_relatif: {r['volume_relatif']} | atr_pct: {r['atr_pct']} | "
-                f"momentum_24h: {r['momentum_24h']} | distance_ema21: {r['distance_ema21']} | "
-                f"position_range: {r['position_range']} | market_regime: {r['market_regime']} | "
+                f"momentum_24h: {r['momentum_24h']} | momentum_1h: {r.get('momentum_1h')} | momentum_3h: {r.get('momentum_3h')} | "
+                f"distance_ema21: {r['distance_ema21']} | position_range: {r['position_range']} | "
+                f"late_entry_risk: {r.get('late_entry_risk')} | late_entry_level: {r.get('late_entry_level')} | "
+                f"late_entry_flags: {','.join(r.get('late_entry_flags', []))} | "
+                f"market_regime: {r['market_regime']} | market_danger_level: {r.get('market_danger_level')} | "
                 f"data_source: {r.get('data_source', data_source_run)} | "
                 f"funding_rate: {r['funding_rate']} | funding_signal: {r['funding_signal']} | "
                 f"derivatives_bias: {r['derivatives_bias']} | derivatives_note: {r['derivatives_note']} | "
+                f"short_watch: {r.get('short_watch')} | short_watch_reasons: {','.join(r.get('short_watch_reasons', []))} | "
                 f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
                 f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
                 f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
@@ -903,6 +1379,10 @@ def full_analysis():
             "text":             "\n".join(lines),
             "count":            len(candidats),
             "market_regime":    market_regime,
+            "market_danger":    market_details,
+            "data_source":      data_source_run,
+            "universe_size":    len(tickers_data),
+            "analyzed_count":   len(top_candidates),
             "cooldown_skipped": cooldown_skipped
         })
 
@@ -913,7 +1393,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "4.5B1-funding-breakout-datasource"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.0-one-shot-dynamic-late-risk-market-danger"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
