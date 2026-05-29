@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import numpy as np
 import urllib.request
+import urllib.parse
 import json
 import time
 import os
@@ -353,34 +354,63 @@ def is_tradeable_usdt_symbol(symbol):
     return True
 
 
+def chunked(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def build_batch_ticker_url(base_url, symbols):
+    # Binance attend un JSON array dans le paramètre symbols.
+    symbols_json = json.dumps(symbols, separators=(",", ":"))
+    return f"{base_url}?symbols={urllib.parse.quote(symbols_json)}"
+
+
 def get_dynamic_tickers(symbols_config=None):
     """
-    V5 lite : watchlist dynamique.
-    - Essaie d'abord Binance Futures 24h complet.
-    - Fallback Spot complet si Futures inaccessible.
-    - Garde les paires USDT liquides + Tier 1.
-    - Si l'appel complet échoue, revient à l'ancienne liste fixe.
+    V5 SAFE : universe élargi mais contrôlé.
+    Pourquoi : sur Railway, l'appel full market Binance peut échouer / timeout.
+    Donc on n'appelle plus /ticker/24hr complet ; on interroge uniquement une
+    watchlist élargie par batch, d'abord Futures puis Spot fallback.
     """
     symbols_config = symbols_config or []
 
-    futures_url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-    spot_url    = "https://api.binance.com/api/v3/ticker/24hr"
+    # Déduplication propre en conservant l'ordre + filtre USDT tradable.
+    seen = set()
+    symbols = []
+    for sym in symbols_config:
+        sym = normalize_symbol(sym)
+        if not sym or sym in seen:
+            continue
+        if not is_tradeable_usdt_symbol(sym):
+            continue
+        seen.add(sym)
+        symbols.append(sym)
 
-    tickers = fetch_binance(futures_url)
+    if not symbols:
+        return [], "UNAVAILABLE"
+
+    futures_base = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+    spot_base    = "https://api.binance.com/api/v3/ticker/24hr"
+
+    def fetch_batches(base_url):
+        out = []
+        # batch raisonnable pour éviter URL trop longue / timeout
+        for batch in chunked(symbols, 40):
+            url = build_batch_ticker_url(base_url, batch)
+            data = fetch_binance(url)
+            if data is None:
+                return None
+            if isinstance(data, dict):
+                data = [data]
+            out.extend(data)
+        return out
+
+    tickers = fetch_batches(futures_base)
     data_source = "FUTURES"
-    if tickers is None:
-        tickers = fetch_binance(spot_url)
-        data_source = "SPOT_FALLBACK"
 
-    if not tickers:
-        # fallback ancien mode : batch symbols fixes
-        batch_url_futures = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbols=[" + ",".join([f'\"{s}\"' for s in symbols_config]) + "]"
-        batch_url_spot    = "https://api.binance.com/api/v3/ticker/24hr?symbols=[" + ",".join([f'\"{s}\"' for s in symbols_config]) + "]"
-        tickers = fetch_binance(batch_url_futures)
-        data_source = "FUTURES"
-        if tickers is None:
-            tickers = fetch_binance(batch_url_spot)
-            data_source = "SPOT_FALLBACK"
+    if tickers is None:
+        tickers = fetch_batches(spot_base)
+        data_source = "SPOT_FALLBACK"
 
     if not tickers:
         return [], "UNAVAILABLE"
@@ -397,22 +427,21 @@ def get_dynamic_tickers(symbols_config=None):
             continue
         if last_price <= 0:
             continue
+        # On conserve les Tier 1 même si volume calme.
         if volume < MIN_QUOTE_VOLUME_USDT and symbol not in TIER1_ALWAYS:
             continue
         filtered.append(t)
 
-    # Liquidity first, but keep Tier 1 even if quiet.
+    # Liquidity first + cap de sécurité.
     filtered.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
-    selected = {normalize_symbol(t.get("symbol")): t for t in filtered[:MAX_DYNAMIC_UNIVERSE]}
 
-    # Force Tier 1 if present in fetched tickers.
+    selected = {normalize_symbol(t.get("symbol")): t for t in filtered[:MAX_DYNAMIC_UNIVERSE]}
     all_by_symbol = {normalize_symbol(t.get("symbol")): t for t in tickers if normalize_symbol(t.get("symbol"))}
     for sym in TIER1_ALWAYS:
         if sym in all_by_symbol:
             selected[sym] = all_by_symbol[sym]
 
     return list(selected.values()), data_source
-
 
 def quick_late_entry_risk(price_change_pct, range_pct):
     """Pré-filtre rapide basé ticker 24h avant chargement des klines."""
@@ -1133,13 +1162,28 @@ def full_analysis():
     try:
         # Liste fixe conservée en filet de sécurité si le scanner dynamique échoue.
         symbols_config = [
-            "BTCUSDT","ETHUSDT","SOLUSDT","LINKUSDT","AVAXUSDT","INJUSDT","FETUSDT",
-            "RENDERUSDT","ARBUSDT","SUIUSDT","WLDUSDT","TIAUSDT","JUPUSDT","SEIUSDT",
-            "GMXUSDT","PENDLEUSDT","ETHFIUSDT","STRKUSDT","ALTUSDT","PIXELUSDT",
-            "PORTALUSDT","MANTAUSDT","NEARUSDT","APTUSDT","DOGEUSDT","WIFUSDT",
-            "PEPEUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT"
+            # Tier 1 / majors
+            "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT",
+            # Large caps / liquid alts
+            "ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","LTCUSDT","BCHUSDT","TRXUSDT",
+            "UNIUSDT","AAVEUSDT","MKRUSDT","COMPUSDT","CRVUSDT","SUSHIUSDT",
+            "ATOMUSDT","NEARUSDT","APTUSDT","SUIUSDT","SEIUSDT","INJUSDT","TIAUSDT",
+            "ARBUSDT","OPUSDT","STRKUSDT","JUPUSDT","PYTHUSDT","WLDUSDT",
+            # AI / infra / DePIN
+            "FETUSDT","RENDERUSDT","RNDRUSDT","GRTUSDT","TAOUSDT","ARKMUSDT","IOUSDT",
+            "FILUSDT","ARUSDT","STXUSDT","ICPUSDT","EGLDUSDT",
+            # Momentum / narratives fréquentes
+            "PENDLEUSDT","ETHFIUSDT","ENAUSDT","ALTUSDT","PIXELUSDT","PORTALUSDT",
+            "MANTAUSDT","OMUSDT","ONDOUSDT","JASMYUSDT","LDOUSDT","RUNEUSDT",
+            "GMTUSDT","GALAUSDT","SANDUSDT","MANAUSDT","APEUSDT","AXSUSDT",
+            # Memes liquides
+            "PEPEUSDT","WIFUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT","SHIBUSDT",
+            # Autres paires souvent actives Binance Futures
+            "ETCUSDT","DYDXUSDT","BLURUSDT","ORDIUSDT","1000SATSUSDT","ZKUSDT",
+            "ZROUSDT","NOTUSDT","PEOPLEUSDT","BIGTIMEUSDT","BEAMXUSDT","CKBUSDT",
+            "MINAUSDT","KASUSDT","HIFIUSDT","MAGICUSDT","ACHUSDT","LQTYUSDT",
+            "GMXUSDT"
         ]
-
         # ── V5.0 : UNIVERSE DYNAMIQUE ───────────────────────────────────────
         tickers_data, data_source_batch = get_dynamic_tickers(symbols_config)
 
@@ -1393,7 +1437,7 @@ def full_analysis():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.0-one-shot-dynamic-late-risk-market-danger"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.0-safe-batch-dynamic-late-risk-market-danger"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
