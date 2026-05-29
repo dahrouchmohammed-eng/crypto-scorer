@@ -104,6 +104,35 @@ def set_cooldown_symbols(symbols):
         cooldown = {k: v for k, v in cooldown.items() if now - v < COOLDOWN_SECONDS}
         save_cooldown(cooldown)
 
+# ─── LOG DES SIGNAUX (traçabilité performance) ──────────────────────────────────
+# Chaque signal émis est journalisé en JSONL pour pouvoir, plus tard, mesurer
+# combien de signaux par seuil et leur taux de réussite réel — et calibrer les
+# seuils sur des chiffres plutôt que sur l'intuition.
+SIGNAL_LOG_FILE = os.environ.get("SIGNAL_LOG_FILE", "/tmp/signals.jsonl")
+_SIGNAL_LOG_LOCK = threading.Lock()
+
+def log_signal(entry):
+    try:
+        record = {
+            "ts": int(time.time()),
+            "symbol": entry.get("symbol"),
+            "flag": entry.get("flag"),
+            "score": entry.get("score"),
+            "confidence": entry.get("confidence"),
+            "direction": entry.get("direction"),
+            "entry_type": entry.get("entry_type"),
+            "trend_strength": entry.get("trend_strength"),
+            "late_entry_risk": entry.get("late_entry_risk"),
+            "risk_reward": entry.get("risk_reward"),
+            "data_source": entry.get("data_source"),
+            "market_regime": entry.get("market_regime"),
+        }
+        with _SIGNAL_LOG_LOCK:
+            with open(SIGNAL_LOG_FILE, "a") as f:
+                f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        logger.warning("log_signal a échoué: %s", e)
+
 # ─── BINANCE API ──────────────────────────────────────────────────────────────
 
 def fetch_binance(url):
@@ -1067,6 +1096,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if short_forbidden:
         flag = "REJET"
 
+    # Rétrogradation anti-entrée-tardive : un CANDIDAT dont le risque d'entrée
+    # tardive est élevé passe en surveillance plutôt que d'être tradé directement.
+    # (en plus de la pénalité de score déjà appliquée plus haut)
+    if flag == "CANDIDAT" and late_entry_risk >= 55:
+        flag = "WATCHLIST"
+
     # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
 
     # Entry zone
@@ -1176,6 +1211,13 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if late_entry_risk >= 55:     confidence = min(confidence, 62)
     if market_danger_level == "HIGH": confidence = min(confidence, 60)
     confidence = round(max(40, min(88, confidence)), 1)
+
+    # Rétrogradation tendance faible : un CANDIDAT en tendance faible ET à confiance
+    # modérée passe en surveillance. On garde le volume de signaux mais on évite les
+    # setups les plus mous. (confidence n'est connue qu'ici, donc on rétrograde après.)
+    if flag == "CANDIDAT" and trend_strength == "weak" and confidence < 65:
+        flag = "WATCHLIST"
+        confidence = min(confidence, 60)
 
     # Sécurité levier après calcul de la confiance finale :
     # - confiance < 60%  -> 3x maximum
@@ -1574,6 +1616,9 @@ def full_analysis():
                 f"duration_label: {r['duration_label']}"
             )
 
+        for r in candidats:
+            log_signal(r)
+
         return jsonify({
             "text":             "\n".join(lines),
             "count":            len(candidats),
@@ -1658,7 +1703,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.2-safe-vision-batch-fix",
+        "version": "5.3-thresholds-signal-log",
         "providers": results
     })
 
@@ -1667,7 +1712,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.2-safe-vision-batch-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.3-thresholds-signal-log"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
