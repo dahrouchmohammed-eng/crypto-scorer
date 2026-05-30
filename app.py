@@ -8,6 +8,7 @@ import time
 import os
 import logging
 import threading
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(
@@ -46,6 +47,20 @@ SAFE_MODE = True
 MAX_DYNAMIC_UNIVERSE = 90
 MAX_FULL_ANALYSIS_CANDIDATES = 18
 MIN_QUOTE_VOLUME_USDT = 15_000_000
+
+# Nombre de signaux envoyés à GPT. Python est maître de la décision ;
+# GPT ne fait que recopier le nombre de candidats reçus, sans en ajouter ni retirer.
+MAX_SIGNALS_DEFAULT       = 2   # cas nominal
+MAX_SIGNALS_NEUTRAL       = 2   # market_regime neutral
+MAX_SIGNALS_VOLATILE      = 1   # market_regime volatile -> prudence
+MAX_SIGNALS_SPOT_FALLBACK = 1   # source spot -> prudence
+MAX_SIGNALS_ABSOLUTE      = 4   # plafond dur
+
+# Fenêtres d'évaluation (forward backtest, utilisées par /evaluate_signals) :
+# - FILL : délai pour que le prix touche la zone d'entrée, sinon NO_FILL.
+# - RESOLVE : délai max après remplissage pour toucher SL/TP, sinon EXPIRED.
+FILL_WINDOW_SECONDS    = int(os.environ.get("FILL_WINDOW_SECONDS", str(4 * 3600)))    # 4h
+RESOLVE_WINDOW_SECONDS = int(os.environ.get("RESOLVE_WINDOW_SECONDS", str(72 * 3600)))  # 72h
 
 TIER1_ALWAYS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"]
 EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
@@ -135,6 +150,62 @@ def log_signal(entry):
         logger.warning("log_signal a échoué: %s", e)
 
 # ─── BINANCE API ──────────────────────────────────────────────────────────────
+
+def build_signal_record(r, market_regime, data_source_run, emitted_ts):
+    """
+    Construit un objet signal structuré et plat, destiné à l'archivage
+    (Google Sheet via Make) et au futur /evaluate_signals.
+    Tous les champs sont déjà calculés par Python : on ne fait que les exposer
+    proprement, un objet par signal réellement envoyé.
+
+    signal_id = symbol-timestamp : identifiant unique pour retrouver la ligne
+    dans la Sheet et mettre à jour son statut (OPEN -> WIN/LOSS/NO_FILL).
+    ref_price = prix au moment de l'émission : sert de référence à l'évaluation.
+    """
+    symbol = r.get("symbol", "")
+    ref_price = r.get("current_price")
+    src_quality = r.get("source_quality", source_quality_label(r.get("data_source", data_source_run)))
+    fill_deadline_ts = emitted_ts + FILL_WINDOW_SECONDS
+    resolve_deadline_ts = emitted_ts + RESOLVE_WINDOW_SECONDS
+    return {
+        "signal_id":       f"{symbol}-{emitted_ts}",
+        "timestamp":       datetime.fromtimestamp(emitted_ts, tz=timezone.utc).isoformat(),
+        "symbol":          symbol,
+        "direction":       r.get("direction"),
+        "entry_type":      r.get("entry_type"),
+        "entry_low":       r.get("entry_low"),
+        "entry_high":      r.get("entry_high"),
+        "entry_avg":       r.get("entry_avg"),
+        "ref_price":       ref_price,
+        "stop_loss":       r.get("stop_loss"),
+        "tp1":             r.get("tp1"),
+        "tp2":             r.get("tp2"),
+        "tp3":             r.get("tp3"),
+        "tp4":             r.get("tp4"),
+        "score":           r.get("score"),
+        "confidence":      r.get("confidence"),
+        "max_leverage":    r.get("max_leverage"),
+        "risk_reward":     r.get("risk_reward"),
+        "flag":            r.get("flag"),
+        "source_quality":  src_quality,
+        "data_source":     r.get("data_source", data_source_run),
+        "market_regime":   market_regime,
+        "trend_strength":  r.get("trend_strength"),
+        "rsi":             r.get("rsi"),
+        "position_range":  r.get("position_range"),
+        # ── Champs d'évaluation (forward backtest) ──────────────────────────
+        # Posés à l'émission :
+        "outcome":         "OPEN",   # OPEN -> NO_FILL | FILLED -> WIN/LOSS/EXPIRED
+        "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
+        "resolve_deadline":datetime.fromtimestamp(resolve_deadline_ts, tz=timezone.utc).isoformat(),
+        # Remplis plus tard par /evaluate_signals (vides au départ) :
+        "filled_at":       "",
+        "closed_at":       "",
+        "exit_price":      "",
+        "evaluation_note": "",
+        "bars_checked":    "",
+    }
+
 
 def fetch_binance(url):
     last_err = None
@@ -744,7 +815,63 @@ def limit_weak_candidates(candidates):
 
     return final
 
-# ─── SCORING v4.4 ─────────────────────────────────────────────────────────────
+def cap_signal_count(candidates, market_regime, data_source_run):
+    """
+    Plafonne le nombre de signaux envoyés à GPT selon le régime et la source.
+    Python reste maître de la décision : GPT ne fait que recopier ce qui reste.
+    L'ordre (tri par score décroissant) est déjà appliqué en amont.
+    """
+    if not candidates:
+        return candidates
+
+    cap = MAX_SIGNALS_DEFAULT
+    if market_regime == "neutral":
+        cap = min(cap, MAX_SIGNALS_NEUTRAL)
+    if market_regime == "volatile":
+        cap = min(cap, MAX_SIGNALS_VOLATILE)
+    if data_source_run == "SPOT_FALLBACK":
+        cap = min(cap, MAX_SIGNALS_SPOT_FALLBACK)
+    # Un setup en tendance faible n'est jamais accompagné d'un second signal.
+    if candidates[0].get("trend_strength") == "weak":
+        cap = 1
+    cap = min(cap, MAX_SIGNALS_ABSOLUTE)
+    return candidates[:cap]
+
+def build_weakness_notes(r):
+    """
+    Faiblesses pré-rédigées par Python à partir des champs déjà calculés.
+    GPT recopie ces notes dans la section Raison au lieu de décider lui-même
+    quelle faiblesse signaler. Phrases neutres, sans mot valorisant ni underscore.
+    """
+    notes = []
+    sq = r.get("source_quality", "")
+    if "SPOT FALLBACK" in sq:
+        notes.append("données spot, dérivés non vérifiés, fiabilité réduite pour un trade à levier")
+    elif "BYBIT FUTURES" in sq:
+        notes.append("source futures alternative (Bybit)")
+
+    if r.get("funding_signal") == "unavailable":
+        notes.append("funding indisponible")
+    if r.get("derivatives_bias") == "caution":
+        notes.append("le funding appelle à la prudence")
+
+    ts = r.get("trend_strength")
+    if ts == "weak":
+        notes.append("tendance faible, à gérer rapidement")
+    elif ts == "moderate":
+        notes.append("tendance modérée")
+
+    if r.get("entry_type") == "MOMENTUM" and (r.get("late_entry_risk") or 0) >= 40:
+        notes.append("mouvement déjà entamé, risque d'entrée tardive")
+
+    mr, d = r.get("market_regime"), r.get("direction")
+    if (mr == "bearish" and d == "LONG") or (mr == "bullish" and d == "SHORT"):
+        notes.append("setup contre-régime BTC, levier réduit par prudence")
+
+    if r.get("flag") == "WATCHLIST":
+        notes.append("signal de calibration, prudence")
+
+    return " ; ".join(notes) if notes else "aucune faiblesse majeure détectée par le moteur"
 # v4   : direction stricte, momentum signé, pénalités pump/distance EMA
 # v4.1 : ema_score/rsi_score directionnels, volume seuils relevés,
 #         position_range, ema_spread, trend_strength
@@ -1400,6 +1527,7 @@ def full_analysis():
             return jsonify({
                 "text": "SKIP",
                 "count": 0,
+                "signals": [],
                 "market_regime": "unknown",
                 "data_source": "UNAVAILABLE",
                 "error": "All providers unreachable: Binance Futures, Bybit Futures, Binance Vision Spot, Binance Spot"
@@ -1577,10 +1705,15 @@ def full_analysis():
                 candidats = short_watch[:1]
                 short_watch_fallback = True
 
+        # Python plafonne le nombre de signaux (régime + source). GPT recopie.
+        # Les fallbacks watchlist/short_watch sont déjà à 1, le cap ne les change pas.
+        candidats = cap_signal_count(candidats, market_regime, data_source_run)
+
         if not candidats:
             return jsonify({
                 "text":             "SKIP",
                 "count":            0,
+                "signals":          [],
                 "market_regime":    market_regime,
                 "market_danger":    market_details,
                 "data_source":      data_source_run,
@@ -1626,6 +1759,7 @@ def full_analysis():
                 f"market_regime: {r['market_regime']} | market_danger_level: {r.get('market_danger_level')} | "
                 f"data_source: {r.get('data_source', data_source_run)} | "
                 f"source_quality: {r.get('source_quality', source_quality_label(r.get('data_source', data_source_run)))} | "
+                f"weakness_notes: {build_weakness_notes(r)} | "
                 f"funding_rate: {r['funding_rate']} | funding_signal: {r['funding_signal']} | "
                 f"derivatives_bias: {r['derivatives_bias']} | derivatives_note: {r['derivatives_note']} | "
                 f"short_watch: {r.get('short_watch')} | short_watch_reasons: {','.join(r.get('short_watch_reasons', []))} | "
@@ -1636,12 +1770,19 @@ def full_analysis():
                 f"duration_label: {r['duration_label']}"
             )
 
+        emitted_ts = int(time.time())
         for r in candidats:
             log_signal(r)
+
+        signals = [
+            build_signal_record(r, market_regime, data_source_run, emitted_ts)
+            for r in candidats
+        ]
 
         return jsonify({
             "text":             "\n".join(lines),
             "count":            len(candidats),
+            "signals":          signals,
             "market_regime":    market_regime,
             "market_danger":    market_details,
             "data_source":      data_source_run,
@@ -1723,7 +1864,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.4-source-quality-risk-prompt",
+        "version": "5.7-eval-fields-forward-backtest",
         "providers": results
     })
 
@@ -1732,7 +1873,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.4-source-quality-risk-prompt"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.7-eval-fields-forward-backtest"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
