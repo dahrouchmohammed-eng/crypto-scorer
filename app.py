@@ -1795,6 +1795,301 @@ def full_analysis():
         return jsonify({"error": str(e), "text": "SKIP", "count": 0}), 500
 
 
+# ─── EVALUATE SIGNALS ─────────────────────────────────────────────────────────
+# Appelé par Make toutes les 2h avec les lignes OPEN de la Google Sheet.
+# Rejoue les klines 5min depuis l'émission pour détecter :
+#   1. Si le prix a touché la zone d'entrée dans la fenêtre de fill (4h).
+#   2. Si, après fill, TP1 ou SL a été touché en premier (fenêtre 72h).
+# Renvoie un tableau "results" que Make itère pour mettre à jour la Sheet.
+#
+# Cycle de vie de outcome :
+#   OPEN → NO_FILL  (fill_deadline dépassée, entrée jamais touchée)
+#   OPEN → WIN      (TP1 touché avant SL)
+#   OPEN → LOSS     (SL touché avant TP1)
+#   OPEN → EXPIRED  (resolve_deadline dépassée, rempli mais ni SL ni TP)
+#   OPEN → OPEN     (encore en cours, rien à mettre à jour)
+
+EVAL_KLINE_INTERVAL = "5m"   # granularité pour limiter le biais intra-barre
+EVAL_KLINE_LIMIT    = 290    # ~24h de klines 5min (Binance max 1500, Bybit max 200)
+
+
+def _get_klines_since(symbol, since_ts, limit=EVAL_KLINE_LIMIT):
+    """
+    Récupère jusqu'à `limit` klines 5min depuis since_ts.
+    Essaie Binance Futures, puis Bybit, puis Binance Vision Spot.
+    Retourne une liste de dicts {ts, open, high, low, close} triés croissant.
+    """
+    results = []
+
+    # Binance Futures (startTime en ms)
+    if BINANCE_ENABLED:
+        url = (f"https://fapi.binance.com/fapi/v1/klines"
+               f"?symbol={symbol}&interval={EVAL_KLINE_INTERVAL}"
+               f"&startTime={since_ts*1000}&limit={limit}")
+        raw = fetch_binance(url)
+        if raw:
+            return [{"ts": int(k[0])//1000, "open": float(k[1]),
+                     "high": float(k[2]), "low": float(k[3]),
+                     "close": float(k[4])} for k in raw]
+
+    # Bybit Linear (startTime en ms)
+    try:
+        start_ms = since_ts * 1000
+        url = (f"https://api.bybit.com/v5/market/kline"
+               f"?category=linear&symbol={symbol}&interval=5"
+               f"&start={start_ms}&limit={min(limit, 200)}")
+        raw = fetch_binance(url)
+        if raw and raw.get("result", {}).get("list"):
+            lst = raw["result"]["list"]
+            return sorted([
+                {"ts": int(k[0])//1000, "open": float(k[1]),
+                 "high": float(k[2]), "low": float(k[3]),
+                 "close": float(k[4])}
+                for k in lst
+            ], key=lambda x: x["ts"])
+    except Exception as e:
+        logger.warning("eval klines bybit %s: %s", symbol, e)
+
+    # Binance Vision Spot (fallback)
+    url = (f"https://data-api.binance.vision/api/v3/klines"
+           f"?symbol={symbol}&interval={EVAL_KLINE_INTERVAL}"
+           f"&startTime={since_ts*1000}&limit={limit}")
+    raw = fetch_binance(url)
+    if raw:
+        return [{"ts": int(k[0])//1000, "open": float(k[1]),
+                 "high": float(k[2]), "low": float(k[3]),
+                 "close": float(k[4])} for k in raw]
+
+    return []
+
+
+def _evaluate_one(sig):
+    """
+    Évalue un signal OPEN unique.
+    Retourne un dict avec signal_id + tous les champs de mise à jour.
+    """
+    signal_id      = sig.get("signal_id", "")
+    symbol         = sig.get("symbol", "")
+    direction      = sig.get("direction", "LONG")
+    entry_low      = float(sig.get("entry_low", 0))
+    entry_high     = float(sig.get("entry_high", 0))
+    stop_loss      = float(sig.get("stop_loss", 0))
+    tp1            = float(sig.get("tp1", 0))
+    fill_dl        = sig.get("fill_deadline", "")
+    resolve_dl     = sig.get("resolve_deadline", "")
+    timestamp_str  = sig.get("timestamp", "")
+
+    # Convertir les deadlines en timestamps Unix
+    try:
+        emit_ts    = int(datetime.fromisoformat(timestamp_str).timestamp())
+        fill_ts    = int(datetime.fromisoformat(fill_dl).timestamp())
+        resolve_ts = int(datetime.fromisoformat(resolve_dl).timestamp())
+    except Exception as e:
+        return {"signal_id": signal_id, "outcome": "OPEN",
+                "evaluation_note": f"erreur parsing dates: {e}", "bars_checked": 0,
+                "filled_at": "", "closed_at": "", "exit_price": ""}
+
+    now = int(time.time())
+
+    # Pas encore le moment d'évaluer
+    if now < fill_ts and now < resolve_ts:
+        klines = _get_klines_since(symbol, emit_ts, limit=EVAL_KLINE_LIMIT)
+        # On vérifie quand même si déjà rempli et résolu avant deadline
+        if not klines:
+            return {"signal_id": signal_id, "outcome": "OPEN",
+                    "evaluation_note": "en cours — pas de données klines",
+                    "bars_checked": 0, "filled_at": "", "closed_at": "", "exit_price": ""}
+    else:
+        klines = _get_klines_since(symbol, emit_ts, limit=EVAL_KLINE_LIMIT)
+
+    if not klines:
+        return {"signal_id": signal_id, "outcome": "OPEN",
+                "evaluation_note": "klines indisponibles, nouvelle tentative plus tard",
+                "bars_checked": 0, "filled_at": "", "closed_at": "", "exit_price": ""}
+
+    bars_checked = len(klines)
+
+    # ── Phase 1 : chercher le fill (entrée dans la zone) ─────────────────────
+    filled_at_ts  = None
+    fill_bar_idx  = None
+    fill_price    = None
+
+    for i, bar in enumerate(klines):
+        # Dépasse la fenêtre de fill : on arrête la recherche de fill
+        if bar["ts"] > fill_ts:
+            break
+        # Le prix touche la zone d'entrée (low ≤ entry_high ET high ≥ entry_low)
+        if bar["low"] <= entry_high and bar["high"] >= entry_low:
+            # Prix d'entrée simulé : milieu de la zone (conservative)
+            fill_price = round((entry_low + entry_high) / 2, 8)
+            filled_at_ts = bar["ts"]
+            fill_bar_idx = i
+            break
+
+    # Fill jamais touché et deadline dépassée → NO_FILL
+    if filled_at_ts is None and now >= fill_ts:
+        return {
+            "signal_id":       signal_id,
+            "outcome":         "NO_FILL",
+            "filled_at":       "",
+            "closed_at":       "",
+            "exit_price":      "",
+            "bars_checked":    bars_checked,
+            "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h"
+        }
+
+    # Fill pas encore atteint, deadline pas encore passée → OPEN
+    if filled_at_ts is None:
+        return {
+            "signal_id":       signal_id,
+            "outcome":         "OPEN",
+            "filled_at":       "",
+            "closed_at":       "",
+            "exit_price":      "",
+            "bars_checked":    bars_checked,
+            "evaluation_note": "en attente de fill"
+        }
+
+    # ── Phase 2 : chercher SL ou TP1 après le fill ───────────────────────────
+    # On commence à la barre SUIVANTE après le fill pour éviter le double-comptage.
+    post_fill = klines[fill_bar_idx + 1:]
+    filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+
+    for bar in post_fill:
+        # Dépassement de la fenêtre de résolution → EXPIRED
+        if bar["ts"] > resolve_ts:
+            break
+
+        bar_hits_sl = (direction == "LONG"  and bar["low"]  <= stop_loss) or \
+                      (direction == "SHORT" and bar["high"] >= stop_loss)
+        bar_hits_tp = (direction == "LONG"  and bar["high"] >= tp1) or \
+                      (direction == "SHORT" and bar["low"]  <= tp1)
+
+        # Biais intra-barre : si les deux sont touchés dans la même bougie,
+        # on regarde la bougie précédente pour inférer la direction dominante.
+        # Si la bougie précédente clôture plus près du SL → LOSS, sinon → WIN.
+        if bar_hits_sl and bar_hits_tp:
+            prev_close = klines[klines.index(bar) - 1]["close"] if klines.index(bar) > 0 else fill_price
+            dist_to_sl = abs(prev_close - stop_loss)
+            dist_to_tp = abs(prev_close - tp1)
+            outcome = "WIN" if dist_to_tp < dist_to_sl else "LOSS"
+            exit_p  = tp1 if outcome == "WIN" else stop_loss
+            return {
+                "signal_id":       signal_id,
+                "outcome":         outcome,
+                "filled_at":       filled_at_iso,
+                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
+                "exit_price":      exit_p,
+                "bars_checked":    bars_checked,
+                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}"
+            }
+
+        if bar_hits_tp:
+            return {
+                "signal_id":       signal_id,
+                "outcome":         "WIN",
+                "filled_at":       filled_at_iso,
+                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
+                "exit_price":      tp1,
+                "bars_checked":    bars_checked,
+                "evaluation_note": f"TP1 touché. fill={fill_price}"
+            }
+
+        if bar_hits_sl:
+            return {
+                "signal_id":       signal_id,
+                "outcome":         "LOSS",
+                "filled_at":       filled_at_iso,
+                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
+                "exit_price":      stop_loss,
+                "bars_checked":    bars_checked,
+                "evaluation_note": f"SL touché. fill={fill_price}"
+            }
+
+    # Rempli mais ni SL ni TP dans la fenêtre de résolution
+    if now >= resolve_ts:
+        return {
+            "signal_id":       signal_id,
+            "outcome":         "EXPIRED",
+            "filled_at":       filled_at_iso,
+            "closed_at":       "",
+            "exit_price":      "",
+            "bars_checked":    bars_checked,
+            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}"
+        }
+
+    # Encore en cours dans la fenêtre de résolution
+    return {
+        "signal_id":       signal_id,
+        "outcome":         "OPEN",
+        "filled_at":       filled_at_iso,
+        "closed_at":       "",
+        "exit_price":      "",
+        "bars_checked":    bars_checked,
+        "evaluation_note": f"rempli à {fill_price}, attente SL/TP"
+    }
+
+
+@app.route("/evaluate_signals", methods=["POST"])
+def evaluate_signals():
+    """
+    Reçoit une liste de signaux OPEN depuis Make (Google Sheet).
+    Rejoue les klines 5min pour chaque signal et retourne l'issue.
+    Make itère sur results[] pour mettre à jour la Sheet.
+
+    Input  : {"signals": [{signal_id, symbol, direction, entry_low, entry_high,
+                           stop_loss, tp1, timestamp, fill_deadline, resolve_deadline}, ...]}
+    Output : {"results": [{signal_id, outcome, filled_at, closed_at, exit_price,
+                           bars_checked, evaluation_note}, ...],
+              "evaluated": N, "still_open": M, "resolved": K}
+    """
+    try:
+        body    = request.get_json(silent=True) or {}
+        signals = body.get("signals", [])
+
+        if not signals:
+            return jsonify({"error": "signals list vide ou manquante",
+                            "results": [], "evaluated": 0}), 400
+
+        if len(signals) > 200:
+            return jsonify({"error": "trop de signaux (max 200 par appel)",
+                            "results": []}), 400
+
+        results = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(_evaluate_one, sig): sig for sig in signals}
+            for fut in as_completed(futures):
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    sig = futures[fut]
+                    logger.warning("_evaluate_one échec %s: %s", sig.get("signal_id"), e)
+                    results.append({
+                        "signal_id":       sig.get("signal_id", "?"),
+                        "outcome":         "OPEN",
+                        "evaluation_note": f"erreur évaluation: {e}",
+                        "bars_checked":    0,
+                        "filled_at": "", "closed_at": "", "exit_price": ""
+                    })
+
+        still_open = sum(1 for r in results if r["outcome"] == "OPEN")
+        resolved   = len(results) - still_open
+
+        logger.info("evaluate_signals: %d signaux, %d résolus, %d encore OPEN",
+                    len(signals), resolved, still_open)
+
+        return jsonify({
+            "results":    results,
+            "evaluated":  len(results),
+            "still_open": still_open,
+            "resolved":   resolved
+        })
+
+    except Exception as e:
+        logger.error("evaluate_signals erreur: %s", e)
+        return jsonify({"error": str(e), "results": []}), 500
+
+
 # ─── PROVIDER TEST ─────────────────────────────────────────────────────────────
 
 @app.route("/provider_test", methods=["GET"])
@@ -1864,7 +2159,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.7-eval-fields-forward-backtest",
+        "version": "5.8-evaluate-signals",
         "providers": results
     })
 
@@ -1873,7 +2168,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.7-eval-fields-forward-backtest"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.8-evaluate-signals"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
