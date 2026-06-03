@@ -2081,7 +2081,7 @@ def evaluate_signals():
 
         if not signals:
             return jsonify({"error": "signals list vide ou manquante",
-                            "results": [], "evaluated": 0}), 400
+                            "results": [], "evaluated": 0, "still_open": 0, "resolved": 0}), 200
 
         if len(signals) > 200:
             return jsonify({"error": "trop de signaux (max 200 par appel)",
@@ -2191,7 +2191,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.10-array-aggregator-fix",
+        "version": "5.10-array-aggregator-fix-v2",
         "providers": results
     })
 
@@ -2200,7 +2200,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.10-array-aggregator-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.10-array-aggregator-fix-v2"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
