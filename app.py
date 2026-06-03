@@ -1871,13 +1871,24 @@ def _evaluate_one(sig):
     signal_id      = sig.get("signal_id", "")
     symbol         = sig.get("symbol", "")
     direction      = sig.get("direction", "LONG")
-    entry_low      = float(sig.get("entry_low", 0))
-    entry_high     = float(sig.get("entry_high", 0))
-    stop_loss      = float(sig.get("stop_loss", 0))
-    tp1            = float(sig.get("tp1", 0))
-    fill_dl        = sig.get("fill_deadline", "")
-    resolve_dl     = sig.get("resolve_deadline", "")
-    timestamp_str  = sig.get("timestamp", "")
+
+    # Make envoie tous les champs comme strings — on normalise proprement.
+    def _f(key, default=0.0):
+        v = sig.get(key, default)
+        try: return float(v)
+        except (TypeError, ValueError): return default
+
+    def _s(key, default=""):
+        v = sig.get(key, default)
+        return str(v).strip() if v is not None else default
+
+    entry_low      = _f("entry_low")
+    entry_high     = _f("entry_high")
+    stop_loss      = _f("stop_loss")
+    tp1            = _f("tp1")
+    fill_dl        = _s("fill_deadline")
+    resolve_dl     = _s("resolve_deadline")
+    timestamp_str  = _s("timestamp")
 
     # Convertir les deadlines en timestamps Unix
     try:
@@ -2159,7 +2170,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.8-evaluate-signals",
+        "version": "5.9-make-compatible",
         "providers": results
     })
 
@@ -2168,7 +2179,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.8-evaluate-signals"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-make-compatible"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
