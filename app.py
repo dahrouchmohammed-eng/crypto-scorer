@@ -2056,7 +2056,28 @@ def evaluate_signals():
     """
     try:
         body    = request.get_json(silent=True) or {}
-        signals = body.get("signals", [])
+        signals_raw = body.get("signals", [])
+
+        # Make Array Aggregator peut envoyer les items sous différentes formes :
+        # - dict normal (idéal)
+        # - string JSON (à parser)
+        # - objet avec des clés numériques (format Make interne)
+        # On normalise tout ici.
+        signals = []
+        for item in signals_raw:
+            if isinstance(item, dict):
+                signals.append(item)
+            elif isinstance(item, str):
+                try:
+                    parsed = json.loads(item)
+                    if isinstance(parsed, dict):
+                        signals.append(parsed)
+                    elif isinstance(parsed, list):
+                        signals.extend([x for x in parsed if isinstance(x, dict)])
+                except Exception:
+                    logger.warning("evaluate_signals: item string non parseable: %s", item[:100])
+            else:
+                logger.warning("evaluate_signals: item type inattendu: %s", type(item))
 
         if not signals:
             return jsonify({"error": "signals list vide ou manquante",
@@ -2170,7 +2191,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.9-make-compatible",
+        "version": "5.10-array-aggregator-fix",
         "providers": results
     })
 
@@ -2179,7 +2200,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-make-compatible"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.10-array-aggregator-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
