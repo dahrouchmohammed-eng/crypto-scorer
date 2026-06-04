@@ -167,8 +167,17 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
     src_quality = r.get("source_quality", source_quality_label(r.get("data_source", data_source_run)))
     fill_deadline_ts = emitted_ts + FILL_WINDOW_SECONDS
     resolve_deadline_ts = emitted_ts + RESOLVE_WINDOW_SECONDS
+
+    # setup_id : regroupe les signaux du même symbole+direction dans un bloc de 4h.
+    # Permet de calculer le winrate par setup indépendant (≠ winrate par signal brut).
+    # Format : BTCUSDT-SHORT-202606011 (jour + bloc 4h : 0,4,8,12,16,20)
+    dt_emit   = datetime.fromtimestamp(emitted_ts, tz=timezone.utc)
+    hour_block = (dt_emit.hour // 4) * 4
+    setup_id  = f"{symbol}-{r.get('direction','')}-{dt_emit.strftime('%Y%m%d')}{hour_block:02d}"
+
     return {
         "signal_id":       f"{symbol}-{emitted_ts}",
+        "setup_id":        setup_id,
         "timestamp":       datetime.fromtimestamp(emitted_ts, tz=timezone.utc).isoformat(),
         "symbol":          symbol,
         "direction":       r.get("direction"),
@@ -194,14 +203,14 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "rsi":             r.get("rsi"),
         "position_range":  r.get("position_range"),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
-        # Posés à l'émission :
-        "outcome":         "OPEN",   # OPEN -> NO_FILL | FILLED -> WIN/LOSS/EXPIRED
+        "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
         "resolve_deadline":datetime.fromtimestamp(resolve_deadline_ts, tz=timezone.utc).isoformat(),
-        # Remplis plus tard par /evaluate_signals (vides au départ) :
+        # Remplis par /evaluate_signals :
         "filled_at":       "",
         "closed_at":       "",
         "exit_price":      "",
+        "fill_time_minutes": "",   # durée entre émission et fill — confirme si entrées trop proches
         "evaluation_note": "",
         "bars_checked":    "",
     }
@@ -1244,6 +1253,13 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if flag == "CANDIDAT" and late_entry_risk >= 55:
         flag = "WATCHLIST"
 
+    # V5.9 — Règle de contrôle du risque statistique :
+    # Les LONG en régime bearish ont une expectancy négative (-0.184R mesurée).
+    # On les dégrade en WATCHLIST pour ne pas les envoyer comme trades actionnables,
+    # mais on les garde dans le log pour continuer à mesurer leur performance.
+    if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
+        flag = "WATCHLIST"
+
     # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
 
     # Entry zone
@@ -1360,6 +1376,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if flag == "CANDIDAT" and trend_strength == "weak" and confidence < 65:
         flag = "WATCHLIST"
         confidence = min(confidence, 60)
+
+    # V5.9 — Quarantaine WIFUSDT : 12 LOSS / 0 WIN sur 12 trades mesurés.
+    # En quarantaine temporaire (7 jours) : rejeté sauf setup exceptionnel
+    # (score ≥ 75 + source Futures + trend strong). À réévaluer après 30 trades.
+    QUARANTINE_SYMBOLS = {"WIFUSDT"}
+    if symbol in QUARANTINE_SYMBOLS:
+        exceptional = (
+            global_score >= 75
+            and data_source in ("FUTURES", "BYBIT_FUTURES")
+            and trend_strength == "strong"
+        )
+        if not exceptional:
+            flag = "REJET"
 
     # Sécurité levier après calcul de la confiance finale :
     # - confiance < 60%  -> 3x maximum
@@ -1895,8 +1924,7 @@ def _evaluate_one(sig):
         emit_ts    = int(datetime.fromisoformat(timestamp_str).timestamp())
         fill_ts    = int(datetime.fromisoformat(fill_dl).timestamp())
         resolve_ts = int(datetime.fromisoformat(resolve_dl).timestamp())
-    except Exception as e:
-        return {"signal_id": signal_id, "outcome": "OPEN",
+    except Exception as e:        return {"signal_id": signal_id, "outcome": "OPEN",
                 "evaluation_note": f"erreur parsing dates: {e}", "bars_checked": 0,
                 "filled_at": "", "closed_at": "", "exit_price": ""}
 
@@ -1946,7 +1974,8 @@ def _evaluate_one(sig):
             "closed_at":       "",
             "exit_price":      "",
             "bars_checked":    bars_checked,
-            "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h"
+            "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h",
+            "fill_time_minutes": ""
         }
 
     # Fill pas encore atteint, deadline pas encore passée → OPEN
@@ -1965,6 +1994,7 @@ def _evaluate_one(sig):
     # On commence à la barre SUIVANTE après le fill pour éviter le double-comptage.
     post_fill = klines[fill_bar_idx + 1:]
     filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+    fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
 
     for bar in post_fill:
         # Dépassement de la fenêtre de résolution → EXPIRED
@@ -1992,7 +2022,8 @@ def _evaluate_one(sig):
                 "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
                 "exit_price":      exit_p,
                 "bars_checked":    bars_checked,
-                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}"
+                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}",
+                "fill_time_minutes": fill_time_min
             }
 
         if bar_hits_tp:
@@ -2003,7 +2034,8 @@ def _evaluate_one(sig):
                 "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
                 "exit_price":      tp1,
                 "bars_checked":    bars_checked,
-                "evaluation_note": f"TP1 touché. fill={fill_price}"
+                "evaluation_note": f"TP1 touché. fill={fill_price}",
+                "fill_time_minutes": fill_time_min
             }
 
         if bar_hits_sl:
@@ -2014,7 +2046,8 @@ def _evaluate_one(sig):
                 "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
                 "exit_price":      stop_loss,
                 "bars_checked":    bars_checked,
-                "evaluation_note": f"SL touché. fill={fill_price}"
+                "evaluation_note": f"SL touché. fill={fill_price}",
+                "fill_time_minutes": fill_time_min
             }
 
     # Rempli mais ni SL ni TP dans la fenêtre de résolution
@@ -2026,7 +2059,8 @@ def _evaluate_one(sig):
             "closed_at":       "",
             "exit_price":      "",
             "bars_checked":    bars_checked,
-            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}"
+            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}",
+            "fill_time_minutes": fill_time_min
         }
 
     # Encore en cours dans la fenêtre de résolution
@@ -2191,7 +2225,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.10-array-aggregator-fix-v2",
+        "version": "5.9-risk-control",
         "providers": results
     })
 
@@ -2200,7 +2234,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.10-array-aggregator-fix-v2"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-risk-control"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
