@@ -28,11 +28,10 @@ _COOLDOWN_LOCK = threading.Lock()
 MAX_WORKERS = 8
 
 # ─── SOURCES DE DONNÉES ─────────────────────────────────────────────────────────
-# Binance (fapi/api .binance.com) est souvent bloqué (HTTP 451) depuis des IP cloud
-# comme Railway. On le désactive par défaut pour échouer vite et basculer sur Bybit
-# puis Binance Vision Spot. Réactivable via variable d'environnement :
-#   BINANCE_ENABLED=true
-BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "false").lower() == "true"
+# Binance Futures (fapi.binance.com) activé par défaut — source principale.
+# Bybit Futures en fallback secondaire si Binance est bloqué.
+# Désactivable via variable d'environnement : BINANCE_ENABLED=false
+BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "true").lower() == "true"
 
 # Timeouts courts : si une source est bloquée, on ne veut pas attendre longtemps.
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
@@ -2225,7 +2224,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.9-risk-control",
+        "version": "5.9-binance-primary",
         "providers": results
     })
 
@@ -2234,7 +2233,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-risk-control"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-binance-primary"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
