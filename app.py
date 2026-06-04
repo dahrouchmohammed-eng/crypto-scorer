@@ -37,14 +37,71 @@ BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "true").lower() == "true"
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
-# ─── CONFIG V5 ────────────────────────────────────────────────────────────────
+# ─── CONFIG V6.0.3 ─────────────────────────────────────────────────────────────
+# V6.0.3 : Logique RR hybride (RR-safe) post-review
+#   RR1 — SL reste TECHNIQUE (ATR plafonné), jamais éloigné pour gonfler le RR
+#   RR2 — TP en multiples de R : TP1=1R, TP2=2R, TP3=3R, TP4=5R, TP5=target_rr
+#   RR3 — CONTRÔLE DE RÉALISME du TP final : target_rr=8R si atteignable
+#         (budget ATR + high/low 7j + late_entry), sinon rabattu à 5R
+#   RR4 — Deux RR : risk_reward_tp2 (reporting) / risk_reward_target=TP4 5R (veto stable)
+#   RR5 — funding=None si indisponible (plus de faux bonus 'funding neutre')
+#   --- héritées v6.0.2 ---
+#   check_veto_v6(direction) / veto avant fallback data
+#   --- héritées v6.0.1 ---
+#   veto tous flags / fallback data / funding directionnel / OI directionnel / gate=58 / candidats=12
 # SAFE_MODE=True = conserve une logique prudente tant que Binance Futures reste instable.
 SAFE_MODE = True
+
+# ─── CONFIG V6.0 — SEUILS FUTURES (à tuner sans toucher au code) ──────────────
+
+# Poids combinaison score final
+V6_WEIGHT_TECH    = 0.70   # poids score technique (moteur existant)
+V6_WEIGHT_FUTURES = 0.30   # poids score futures (OI + funding + L/S + taker)
+
+# Couche 1 — VETO bloquant (5 règles)
+VETO_FUNDING_EXTREME    = 0.0008   # |funding| > 0.08% → veto
+VETO_OI_COLLAPSE_PCT    = -0.10    # OI < -10% sur la fenêtre → veto
+VETO_MIN_RR_V6          = 3.0      # RR réaliste < 3 → veto
+# BTC danger : utilise le market_danger_level existant (HIGH → veto)
+# Liquidité : utilise MIN_QUOTE_VOLUME_USDT existant
+
+# Couche 3 — Barème bonus/malus Open Interest
+OI_BONUS_TABLE = [(0.20, 12), (0.10, 8), (0.05, 4)]
+OI_MALUS_TABLE = [(-0.10, -12), (-0.05, -6)]
+
+# Couche 3 — Barème bonus/malus Taker buy ratio
+TAKER_BONUS_TABLE = [(0.70, 12), (0.60, 8)]
+TAKER_MALUS_TABLE = [(0.30, -8)]   # taker buy < 30% = vente dominante
+
+# Couche 3 — Funding (bonus/malus doux, veto dur géré séparément)
+FUNDING_FAVORABLE_PTS   = 4      # funding neutre ou favorable → +4
+FUNDING_HOSTILE_PTS     = -10    # funding extrême dans mauvais sens → -10
+FUNDING_EXTREME_SOFT    = 0.0005 # seuil soft (0.05%) pour le malus doux
+FUNDING_NEUTRAL_BAND    = 0.0001 # ±0.01% = neutre
+
+# Couche 3 — Long/Short ratio
+LS_TOP_ALIGNED_BONUS    = 6    # top traders alignés avec notre direction → +6
+LS_CROWD_MALUS          = -8   # foule trop chargée dans notre sens → -8
+LS_CROWD_THRESHOLD_LONG = 2.0  # ratio > 2 = trop de longs dans la foule
+LS_CROWD_THRESHOLD_SHORT= 0.5  # ratio < 0.5 = trop de shorts dans la foule
+
+# Normalisation score futures (bornes du raw avant normalisation 0–100)
+FUTURES_RAW_MIN = -38.0
+FUTURES_RAW_MAX =  38.0
+
+# Paramètres API futures data
+OI_PERIOD   = "1h"   # granularité OI history
+OI_LOOKBACK = 6      # nb de points pour mesurer la variation d'OI
+
+# Seuil minimum score technique pour déclencher l'appel futures (économie réseau)
+# À 58 : seuls les vrais candidats et watchlist solides déclenchent les appels API futures
+# (monter à 62-65 progressivement si les timeouts augmentent)
+FUTURES_TECH_SCORE_GATE = 58
 
 # Universe dynamique : on part de toutes les paires USDT disponibles via ticker 24h,
 # puis on garde uniquement les plus liquides / actives.
 MAX_DYNAMIC_UNIVERSE = 90
-MAX_FULL_ANALYSIS_CANDIDATES = 18
+MAX_FULL_ANALYSIS_CANDIDATES = 12   # réduit à 12 pour v6.0.1 (moins d'appels API futures)
 MIN_QUOTE_VOLUME_USDT = 15_000_000
 
 # Nombre de signaux envoyés à GPT. Python est maître de la décision ;
@@ -190,10 +247,14 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "tp2":             r.get("tp2"),
         "tp3":             r.get("tp3"),
         "tp4":             r.get("tp4"),
+        "tp5":             r.get("tp5"),
         "score":           r.get("score"),
         "confidence":      r.get("confidence"),
         "max_leverage":    r.get("max_leverage"),
         "risk_reward":     r.get("risk_reward"),
+        "risk_reward_tp2":    r.get("risk_reward_tp2"),
+        "risk_reward_target": r.get("risk_reward_target"),
+        "target_rr":          r.get("target_rr"),
         "flag":            r.get("flag"),
         "source_quality":  src_quality,
         "data_source":     r.get("data_source", data_source_run),
@@ -413,7 +474,315 @@ def interpret_funding(funding_rate, direction, available=True):
 
     return funding_signal, derivatives_bias, derivatives_note, confidence_adjustment
 
-# ─── CALCULS TECHNIQUES ───────────────────────────────────────────────────────
+# ─── MODULE FUTURES V6.0 — OI / LONG-SHORT RATIO / TAKER BUY/SELL ────────────
+# Source : Binance USD-M Futures public (fapi.binance.com), sans clé API.
+# Architecture 3 couches :
+#   Couche 1 — VETO         : 5 règles bloquantes
+#   Couche 2 — TECHNIQUE    : moteur existant (score_symbol), poids 70%
+#   Couche 3 — FUTURES      : bonus/malus OI+funding+L/S+taker, poids 30%
+# Score final = 0.70 * technique + 0.30 * futures   (après veto)
+
+def _fetch_futures_endpoint(path, params):
+    """GET sur fapi.binance.com avec retry (réutilise fetch_binance)."""
+    qs = urllib.parse.urlencode(params)
+    url = f"https://fapi.binance.com{path}?{qs}"
+    return fetch_binance(url)
+
+def fetch_futures_data_v6(symbol):
+    """
+    Récupère en parallèle les 4 indicateurs futures Binance pour un symbole.
+    Retourne un dict avec les valeurs brutes (None si indisponible).
+    """
+    result = {
+        "oi_change_pct": None,
+        "taker_buy_ratio": None,
+        "ls_global_long_ratio": None,
+        "ls_top_long_ratio": None,
+        "errors": []
+    }
+
+    def _oi():
+        data = _fetch_futures_endpoint(
+            "/futures/data/openInterestHist",
+            {"symbol": symbol, "period": OI_PERIOD, "limit": OI_LOOKBACK}
+        )
+        if data and len(data) >= 2:
+            try:
+                old = float(data[0]["sumOpenInterest"])
+                new = float(data[-1]["sumOpenInterest"])
+                return (new - old) / old if old else None
+            except Exception as e:
+                result["errors"].append(f"oi:{e}")
+        else:
+            result["errors"].append("oi:no_data")
+        return None
+
+    def _taker():
+        data = _fetch_futures_endpoint(
+            "/futures/data/takerlongshortRatio",
+            {"symbol": symbol, "period": OI_PERIOD, "limit": 1}
+        )
+        if data and len(data) >= 1:
+            try:
+                r = float(data[-1]["buySellRatio"])
+                return r / (1 + r)   # convertir en part d'achat 0..1
+            except Exception as e:
+                result["errors"].append(f"taker:{e}")
+        else:
+            result["errors"].append("taker:no_data")
+        return None
+
+    def _ls_global():
+        data = _fetch_futures_endpoint(
+            "/futures/data/globalLongShortAccountRatio",
+            {"symbol": symbol, "period": OI_PERIOD, "limit": 1}
+        )
+        if data and len(data) >= 1:
+            try:
+                return float(data[-1]["longShortRatio"])
+            except Exception as e:
+                result["errors"].append(f"ls_global:{e}")
+        return None
+
+    def _ls_top():
+        data = _fetch_futures_endpoint(
+            "/futures/data/topLongShortPositionRatio",
+            {"symbol": symbol, "period": OI_PERIOD, "limit": 1}
+        )
+        if data and len(data) >= 1:
+            try:
+                return float(data[-1]["longShortRatio"])
+            except Exception as e:
+                result["errors"].append(f"ls_top:{e}")
+        return None
+
+    # Appels parallèles (4 endpoints indépendants)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        f_oi     = ex.submit(_oi)
+        f_taker  = ex.submit(_taker)
+        f_lsg    = ex.submit(_ls_global)
+        f_lst    = ex.submit(_ls_top)
+        result["oi_change_pct"]       = f_oi.result()
+        result["taker_buy_ratio"]     = f_taker.result()
+        result["ls_global_long_ratio"]= f_lsg.result()
+        result["ls_top_long_ratio"]   = f_lst.result()
+
+    return result
+
+
+def check_veto_v6(fd, direction, rr, market_danger_level, quote_volume_24h):
+    """
+    Couche 1 : 5 règles bloquantes.
+    Retourne (passed: bool, reasons: list[str]).
+    """
+    reasons = []
+
+    # Règle 1 : RR trop faible
+    if rr is None or rr < VETO_MIN_RR_V6:
+        reasons.append(f"RR {rr} < {VETO_MIN_RR_V6} (RR minimum requis)")
+
+    # Règle 2 : Funding extrême DIRECTIONNEL
+    # funding très positif = longs crowded → veto seulement pour LONG
+    # funding très négatif = shorts crowded → veto seulement pour SHORT
+    # (l'inverse peut être un avantage : funding positif + SHORT = squeeze possible)
+    funding_rate = fd.get("funding_rate")
+    if funding_rate is not None:
+        hostile_funding = (
+            (direction == "LONG"  and funding_rate  >  VETO_FUNDING_EXTREME) or
+            (direction == "SHORT" and funding_rate  < -VETO_FUNDING_EXTREME)
+        )
+        if hostile_funding:
+            reasons.append(f"funding hostile {funding_rate:+.4%} pour {direction} (seuil ±{VETO_FUNDING_EXTREME:.4%})")
+
+    # Règle 3 : BTC en danger (réutilise market_danger_level existant)
+    if market_danger_level == "HIGH":
+        reasons.append("BTC market_danger_level HIGH")
+
+    # Règle 4 : Liquidité insuffisante
+    if quote_volume_24h is not None and quote_volume_24h < MIN_QUOTE_VOLUME_USDT:
+        reasons.append(f"liquidité 24h {quote_volume_24h:,.0f} < {MIN_QUOTE_VOLUME_USDT:,.0f}")
+
+    # Règle 5 : OI en chute libre
+    oi_chg = fd.get("oi_change_pct")
+    if oi_chg is not None and oi_chg < VETO_OI_COLLAPSE_PCT:
+        reasons.append(f"OI en chute {oi_chg:+.1%} (< {VETO_OI_COLLAPSE_PCT:.0%})")
+
+    return len(reasons) == 0, reasons
+
+
+def _tiered_pts(value, bonus_table, malus_table):
+    """Applique le premier palier atteint (tables triées du + fort au + faible)."""
+    for threshold, pts in bonus_table:
+        if value >= threshold:
+            return pts
+    for threshold, pts in malus_table:
+        if value <= threshold:
+            return pts
+    return 0
+
+
+def compute_futures_score_v6(fd, direction):
+    """
+    Couche 3 : calcule le score futures brut (bonus/malus) puis le normalise 0..100.
+    fd : dict retourné par fetch_futures_data_v6 + "funding_rate" (déjà dans score_symbol).
+    direction : "LONG" ou "SHORT".
+    """
+    raw = 0
+    breakdown = {}
+    is_long = (direction == "LONG")
+    momentum_1h = fd.get("momentum_1h", 0) or 0   # injecté depuis score_symbol
+
+    # — Open Interest DIRECTIONNEL —
+    # OI seul ne suffit pas : il faut que le prix confirme la direction
+    # OI↑ + prix dans notre sens = soutenu → bonus
+    # OI↑ + prix contre notre sens = dangereux → malus
+    # OI↓ = mouvement fragile → malus quelle que soit la direction
+    oi_chg = fd.get("oi_change_pct")
+    if oi_chg is not None:
+        price_aligned = (is_long and momentum_1h >= 0) or (not is_long and momentum_1h <= 0)
+        if oi_chg >= 0.20:
+            pts = 12 if price_aligned else -6
+        elif oi_chg >= 0.10:
+            pts = 8  if price_aligned else -4
+        elif oi_chg >= 0.05:
+            pts = 4  if price_aligned else -2
+        elif oi_chg <= -0.10:
+            pts = -12
+        elif oi_chg <= -0.05:
+            pts = -6
+        else:
+            pts = 0
+        raw += pts
+        breakdown["oi"] = pts
+
+    # — Taker buy/sell (directionnel : LONG veut buy, SHORT veut sell) —
+    tbr = fd.get("taker_buy_ratio")
+    if tbr is not None:
+        directionnal_tbr = tbr if is_long else (1 - tbr)
+        pts = _tiered_pts(directionnal_tbr, TAKER_BONUS_TABLE, TAKER_MALUS_TABLE)
+        raw += pts
+        breakdown["taker"] = pts
+
+    # — Funding (signé selon direction) —
+    funding_rate = fd.get("funding_rate")
+    if funding_rate is not None:
+        # signed > 0 signifie que le funding va CONTRE nous
+        signed = funding_rate if is_long else -funding_rate
+        pts = 0
+        if abs(funding_rate) >= FUNDING_EXTREME_SOFT and signed > 0:
+            pts = FUNDING_HOSTILE_PTS    # extrême et contre nous
+        elif abs(funding_rate) <= FUNDING_NEUTRAL_BAND or signed < 0:
+            pts = FUNDING_FAVORABLE_PTS  # neutre ou favorable
+        raw += pts
+        breakdown["funding"] = pts
+
+    # — Long/Short ratios —
+    ls_pts = 0
+    ls_top = fd.get("ls_top_long_ratio")
+    if ls_top is not None:
+        top_is_long = ls_top > 1.0
+        if top_is_long == is_long:
+            ls_pts += LS_TOP_ALIGNED_BONUS    # top traders alignés avec nous
+    ls_global = fd.get("ls_global_long_ratio")
+    if ls_global is not None:
+        if is_long and ls_global > LS_CROWD_THRESHOLD_LONG:
+            ls_pts += LS_CROWD_MALUS          # foule trop longue
+        elif (not is_long) and ls_global < LS_CROWD_THRESHOLD_SHORT:
+            ls_pts += LS_CROWD_MALUS          # foule trop courte
+    raw += ls_pts
+    breakdown["long_short"] = ls_pts
+
+    # Normalisation 0..100
+    raw_clamped  = max(FUTURES_RAW_MIN, min(FUTURES_RAW_MAX, raw))
+    normalized   = (raw_clamped - FUTURES_RAW_MIN) / (FUTURES_RAW_MAX - FUTURES_RAW_MIN) * 100
+
+    return round(normalized, 1), raw, breakdown
+
+
+def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
+                   quote_volume_24h, result_dict):
+    """
+    Point d'entrée v6 : orchestre les 3 couches et retourne le score final.
+
+    result_dict : le dict déjà construit par score_symbol (pour récupérer funding_rate).
+    Retourne un dict enrichi avec :
+      v6_accepted      : bool (False si veto)
+      v6_veto_reasons  : list[str]
+      v6_score_final   : float (score combiné 70/30) ou None si veto
+      v6_score_futures : float ou None
+      v6_futures_detail: dict breakdown
+      v6_data_errors   : list[str]
+    """
+    # On ne lance pas les appels API si le score technique est trop bas (économie réseau)
+    if technical_score < FUTURES_TECH_SCORE_GATE:
+        return {
+            "v6_accepted": False,
+            "v6_veto_reasons": [f"score technique {technical_score} < seuil {FUTURES_TECH_SCORE_GATE}"],
+            "v6_score_final": None,
+            "v6_score_futures": None,
+            "v6_futures_detail": {},
+            "v6_data_errors": ["skipped: tech score gate"]
+        }
+
+    # Récupération données futures (4 appels parallèles)
+    fd = fetch_futures_data_v6(symbol)
+    # Injecter funding_rate déjà récupéré dans score_symbol (évite un 5e appel)
+    fd["funding_rate"] = result_dict.get("funding_rate")
+    fd["momentum_1h"]  = result_dict.get("momentum_1h", 0)
+
+    # ── COUCHE 1 — VETO (TOUJOURS appliqué, même si futures data incomplète) ──
+    # Les vetos RR / BTC danger / liquidité / funding hostile ne dépendent pas
+    # des données OI. Le veto OI collapse est lui conditionnel (is not None interne).
+    # On lance donc le veto AVANT le contrôle de disponibilité data.
+    veto_ok, veto_reasons = check_veto_v6(fd, direction, rr, market_danger_level, quote_volume_24h)
+    if not veto_ok:
+        return {
+            "v6_accepted": False,
+            "v6_veto_reasons": veto_reasons,
+            "v6_score_final": None,
+            "v6_score_futures": None,
+            "v6_futures_detail": {},
+            "v6_data_errors": fd.get("errors", [])
+        }
+
+    # ── Qualité data : si < 3 indicateurs sur 5, le veto a déjà été passé ──────
+    # On conserve alors le score technique tel quel (pas de pénalité artificielle),
+    # mais le trade reste autorisé puisqu'aucun veto dur ne s'est déclenché.
+    available_count = sum([
+        fd.get("oi_change_pct")        is not None,
+        fd.get("taker_buy_ratio")      is not None,
+        fd.get("ls_global_long_ratio") is not None,
+        fd.get("ls_top_long_ratio")    is not None,
+        fd.get("funding_rate")         is not None,
+    ])
+    if available_count < 3:
+        logger.warning("V6 data insuffisante %s (%d/5 indicateurs) — score technique conservé (veto déjà passé)",
+                       symbol, available_count)
+        return {
+            "v6_accepted": True,
+            "v6_veto_reasons": [],
+            "v6_score_final": technical_score,   # score inchangé, pas de pénalité
+            "v6_score_futures": None,
+            "v6_futures_detail": {},
+            "v6_data_errors": fd.get("errors", []) + [f"insufficient futures data ({available_count}/5)"]
+        }
+
+    # ── COUCHE 3 — Score futures ──────────────────────────────────────────────
+    futures_norm, futures_raw, futures_breakdown = compute_futures_score_v6(fd, direction)
+
+    # Combinaison 70/30
+    score_final = round(V6_WEIGHT_TECH * technical_score + V6_WEIGHT_FUTURES * futures_norm, 1)
+
+    return {
+        "v6_accepted": True,
+        "v6_veto_reasons": [],
+        "v6_score_final": score_final,
+        "v6_score_futures": futures_norm,
+        "v6_futures_detail": futures_breakdown,
+        "v6_data_errors": fd.get("errors", [])
+    }
+
+
 
 def calculate_rsi(closes, period=14):
     closes = np.array(closes, dtype=float)
@@ -938,6 +1307,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # Si moins de 168 bougies sont disponibles, on utilise tout l'historique chargé.
     lookback_7d = min(len(lows), 168)
     low_7d = min(lows[-lookback_7d:]) if lookback_7d > 0 else low_24h
+    high_7d = max(highs[-lookback_7d:]) if lookback_7d > 0 else high_24h
     distance_low_7d_pct = round(((current - low_7d) / low_7d) * 100, 2) if low_7d > 0 else 999
 
     above_ema50 = current > ema50
@@ -1240,22 +1610,14 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         flag = "REJET"
 
     if short_watch:
-        # On ne short pas automatiquement : on transforme uniquement en surveillance.
         flag = "SHORT_WATCH"
 
     if short_forbidden:
         flag = "REJET"
 
-    # Rétrogradation anti-entrée-tardive : un CANDIDAT dont le risque d'entrée
-    # tardive est élevé passe en surveillance plutôt que d'être tradé directement.
-    # (en plus de la pénalité de score déjà appliquée plus haut)
     if flag == "CANDIDAT" and late_entry_risk >= 55:
         flag = "WATCHLIST"
 
-    # V5.9 — Règle de contrôle du risque statistique :
-    # Les LONG en régime bearish ont une expectancy négative (-0.184R mesurée).
-    # On les dégrade en WATCHLIST pour ne pas les envoyer comme trades actionnables,
-    # mais on les garde dans le log pour continuer à mesurer leur performance.
     if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
         flag = "WATCHLIST"
 
@@ -1304,25 +1666,83 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     else:
         stop_loss = round(current, 8)
 
-    # Take Profits
-    if direction == "LONG":
-        tp1 = round(entry_avg + 1 * atr, 8)
-        tp2 = round(entry_avg + 2 * atr, 8)
-        tp3 = round(entry_avg + 3 * atr, 8)
-        tp4 = round(entry_avg + 4 * atr, 8)
-    elif direction == "SHORT":
-        tp1 = round(entry_avg - 1 * atr, 8)
-        tp2 = round(entry_avg - 2 * atr, 8)
-        tp3 = round(entry_avg - 3 * atr, 8)
-        tp4 = round(entry_avg - 4 * atr, 8)
-    else:
-        tp1 = tp2 = tp3 = tp4 = round(current, 8)
+    # Risk (distance entry → SL technique) — calculé AVANT les TP.
+    # Le SL reste technique (ATR plafonné par classe d'actif, déjà calculé plus haut).
+    # On ne l'éloigne JAMAIS artificiellement pour améliorer le RR.
+    risk = abs(entry_avg - stop_loss)
 
-    # Risk / Reward
-    risk        = abs(entry_avg - stop_loss)
-    reward_tp2  = abs(tp2 - entry_avg)
-    risk_reward = round(reward_tp2 / risk, 2) if risk > 0 else 0
-    rr_valid    = risk_reward >= 2.0
+    # ── CONTRÔLE DE RÉALISME DU TP FINAL (target_rr 5R vs 8R) ─────────────────
+    # On ne place pas un TP à 8R s'il est hors d'atteinte par rapport à la
+    # volatilité récente et aux extrêmes de range. Dans ce cas, on rabat à 5R.
+    # Logique : la distance prix→TP8 doit rester atteignable au regard de l'ATR
+    # et ne pas dépasser largement le high/low 7j dans le sens du trade.
+    target_rr = 8   # objectif idéal par défaut
+    realism_reasons = []
+
+    if risk > 0 and direction in ("LONG", "SHORT"):
+        # Distance théorique jusqu'au TP 8R, en % du prix
+        tp8_price = entry_avg + 8 * risk if direction == "LONG" else entry_avg - 8 * risk
+        dist_tp8_pct = abs(tp8_price - current) / current * 100 if current > 0 else 999
+
+        # 1. Réalisme volatilité : le mouvement 8R doit être faisable par rapport à l'ATR.
+        #    Si la distance à TP8 dépasse ~12x l'ATR%, c'est peu probable à horizon du trade.
+        atr_budget = atr_pct * 12 if atr_pct > 0 else 0
+        if atr_budget > 0 and dist_tp8_pct > atr_budget:
+            realism_reasons.append(f"TP8 {dist_tp8_pct:.1f}% > budget ATR {atr_budget:.1f}%")
+
+        # 2. Réalisme structure : TP8 ne doit pas exiger de pulvériser le high/low 7j
+        #    de façon excessive (au-delà de +3% du high 7j pour un LONG, ou -3% du low 7j pour un SHORT).
+        if direction == "LONG" and high_7d > 0:
+            overshoot = (tp8_price - high_7d) / high_7d * 100
+            if overshoot > 3.0:
+                realism_reasons.append(f"TP8 dépasse high_7d de {overshoot:.1f}%")
+        elif direction == "SHORT" and low_7d > 0:
+            overshoot = (low_7d - tp8_price) / low_7d * 100
+            if overshoot > 3.0:
+                realism_reasons.append(f"TP8 sous low_7d de {overshoot:.1f}%")
+
+        # 3. Réalisme momentum : une entrée déjà tardive a peu de réserve pour aller à 8R.
+        if late_entry_risk >= 55:
+            realism_reasons.append("entrée tardive, réserve de mouvement limitée")
+
+        # Si au moins un critère de réalisme échoue → on rabat l'objectif à 5R.
+        if realism_reasons:
+            target_rr = 5
+
+    # ── TAKE PROFITS en multiples de R (hybride : R + réalisme) ───────────────
+    # TP1=1R sécurisation, TP2=2R trade validé, TP3=3R bon move,
+    # TP4=5R objectif cible, TP5=target_rr (8R si réaliste, sinon 5R).
+    if direction == "LONG":
+        tp1 = round(entry_avg + 1 * risk, 8)
+        tp2 = round(entry_avg + 2 * risk, 8)
+        tp3 = round(entry_avg + 3 * risk, 8)
+        tp4 = round(entry_avg + 5 * risk, 8)
+        tp5 = round(entry_avg + target_rr * risk, 8)
+    elif direction == "SHORT":
+        tp1 = round(entry_avg - 1 * risk, 8)
+        tp2 = round(entry_avg - 2 * risk, 8)
+        tp3 = round(entry_avg - 3 * risk, 8)
+        tp4 = round(entry_avg - 5 * risk, 8)
+        tp5 = round(entry_avg - target_rr * risk, 8)
+    else:
+        tp1 = tp2 = tp3 = tp4 = tp5 = round(current, 8)
+        target_rr = 0
+
+    # ── DEUX RR DISTINCTS ─────────────────────────────────────────────────────
+    # risk_reward_tp2    : RR opérationnel court terme (TP2) → reporting + rr_valid
+    # risk_reward_target : RR cible final (TP4 = 5R, plancher solide) → utilisé par le VETO V6
+    #   On base le veto sur TP4 (5R) et non TP5 : 5R est l'objectif cible toujours
+    #   présent, alors que TP5 peut être rabattu. Le veto reste cohérent et stable.
+    if risk > 0:
+        risk_reward_tp2    = round(abs(tp2 - entry_avg) / risk, 2)
+        risk_reward_target = round(abs(tp4 - entry_avg) / risk, 2)   # = 5R
+    else:
+        risk_reward_tp2 = 0
+        risk_reward_target = 0
+
+    # Compat : risk_reward conservé = RR opérationnel TP2 (utilisé pour rr_valid)
+    risk_reward = risk_reward_tp2
+    rr_valid    = risk_reward_tp2 >= 2.0
 
     # Levier maximum
     if symbol in MEMECOINS:    base_leverage = 5
@@ -1417,6 +1837,51 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if derivatives_bias == "caution":
         max_leverage = min(max_leverage, 5)
 
+    # ── V6.0 : COUCHES VETO + FUTURES (après tous les calculs, avant return) ──
+    # On passe le ticker 24h volume pour la règle de liquidité du veto.
+    quote_volume_24h_v6 = float(ticker_data.get("quoteVolume", 0)) if ticker_data else None
+    # On prépare un dict partiel pour check_veto (funding_rate déjà connu)
+    # Correction : si funding indisponible, passer None (pas 0.0) pour éviter
+    # un faux bonus "funding neutre" dans le score futures.
+    _v6_input = {
+        "funding_rate": funding_rate if funding_available else None,
+        "momentum_1h": momentum_1h
+    }
+    # On injecte oi_change_pct une fois fetch fait dans apply_v6_layer
+    # Le veto V6 utilise le RR CIBLE (TP4 = 5R), pas le RR opérationnel TP2 (~2R).
+    v6 = apply_v6_layer(
+        symbol=symbol,
+        direction=direction,
+        technical_score=global_score,
+        rr=risk_reward_target,
+        market_danger_level=market_danger_level,
+        quote_volume_24h=quote_volume_24h_v6,
+        result_dict=_v6_input
+    )
+
+    # Si veto déclenché → REJET systématique, tous flags confondus
+    # (CANDIDAT, WATCHLIST, SHORT_WATCH : aucun ne doit passer un veto v6)
+    if not v6["v6_accepted"]:
+        flag = "REJET"
+        logger.info("V6 veto %s: %s", symbol, v6["v6_veto_reasons"])
+
+    # Si accepté → remplacer le score par le score final combiné 70/30
+    if v6["v6_accepted"] and v6["v6_score_final"] is not None:
+        global_score = v6["v6_score_final"]
+        # Réévaluer le flag avec le nouveau score combiné
+        if flag not in ("SHORT_WATCH", "REJET"):
+            if global_score >= 58:
+                flag = "CANDIDAT"
+            elif global_score >= 52:
+                flag = "WATCHLIST"
+            else:
+                flag = "REJET"
+        # Ré-appliquer les règles de rétrogradation sur le score combiné
+        if flag == "CANDIDAT" and late_entry_risk >= 55:
+            flag = "WATCHLIST"
+        if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
+            flag = "WATCHLIST"
+
     # Durée estimée calculée par Python
     if trend_strength == "strong":
         duration_label = "24 à 72h"
@@ -1475,11 +1940,23 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "tp2":             tp2,
         "tp3":             tp3,
         "tp4":             tp4,
+        "tp5":             tp5,
+        "target_rr":          target_rr,
         "risk_reward":     risk_reward,
+        "risk_reward_tp2":    risk_reward_tp2,
+        "risk_reward_target": risk_reward_target,
+        "tp_realism_note":    " ; ".join(realism_reasons) if realism_reasons else "TP8 réaliste",
         "rr_valid":        rr_valid,
         "max_leverage":    max_leverage,
         "confidence":      confidence,
         "duration_label":   duration_label,
+        # ── V6.0 : champs futures ────────────────────────────────────────────
+        "v6_accepted":       v6["v6_accepted"],
+        "v6_veto_reasons":   v6["v6_veto_reasons"],
+        "v6_score_final":    v6["v6_score_final"],
+        "v6_score_futures":  v6["v6_score_futures"],
+        "v6_futures_detail": v6["v6_futures_detail"],
+        "v6_data_errors":    v6["v6_data_errors"],
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -1792,10 +2269,16 @@ def full_analysis():
                 f"derivatives_bias: {r['derivatives_bias']} | derivatives_note: {r['derivatives_note']} | "
                 f"short_watch: {r.get('short_watch')} | short_watch_reasons: {','.join(r.get('short_watch_reasons', []))} | "
                 f"entry_low: {r['entry_low']} | entry_high: {r['entry_high']} | entry_avg: {r['entry_avg']} | "
-                f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | "
-                f"risk_reward: {r['risk_reward']} | rr_valid: {r['rr_valid']} | "
+                f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | tp5: {r.get('tp5')} | "
+                f"target_rr: {r.get('target_rr')} | tp_realism: {r.get('tp_realism_note')} | "
+                f"risk_reward_tp2: {r.get('risk_reward_tp2')} | risk_reward_target: {r.get('risk_reward_target')} | rr_valid: {r['rr_valid']} | "
                 f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
-                f"duration_label: {r['duration_label']}"
+                f"duration_label: {r['duration_label']} | "
+                f"v6_score_futures: {r.get('v6_score_futures')} | "
+                f"v6_futures_detail: oi={r.get('v6_futures_detail',{}).get('oi',0):+d} "
+                f"taker={r.get('v6_futures_detail',{}).get('taker',0):+d} "
+                f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
+                f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
             )
 
         emitted_ts = int(time.time())
@@ -2224,7 +2707,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "5.9-binance-primary",
+        "version": "6.0.3-futures-layer",
         "providers": results
     })
 
@@ -2233,7 +2716,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "5.9-binance-primary"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.3-futures-layer"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
