@@ -37,8 +37,14 @@ BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "true").lower() == "true"
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
-# ─── CONFIG V6.0.4 ─────────────────────────────────────────────────────────────
-# V6.0.4 : Module liquidations forcées (Binance allForceOrders)
+# ─── CONFIG V6.0.4b ────────────────────────────────────────────────────────────
+# V6.0.4b : Module liquidations désactivé
+#   FIX — /fapi/v1/allForceOrders déprécié par Binance ("endpoint out of maintenance")
+#         Appel remplacé par stub None — zéro appel réseau inutile par cycle
+#         available_count repassé à 5 (liquidations exclues)
+#         Remplacement prévu via CoinGlass en v6.1
+#   --- héritées v6.0.4 ---
+#   fetch_liquidations_v6 conservé dans le code mais non appelé
 #   LIQ1 — fetch_liquidations_v6 : long_liq/short_liq/imbalance sur fenêtre configurable
 #   LIQ2 — scoring liquidations : +12/+6 si alignées, -12/-6 si opposées, -6 cascade extrême
 #   LIQ3 — FUTURES_RAW_MIN/MAX élargi à ±50 (absorbe les nouveaux points liquidations)
@@ -677,10 +683,14 @@ def fetch_futures_data_v6(symbol):
         return None
 
     def _liquidations():
-        liq = fetch_liquidations_v6(symbol)
-        if liq.get("error"):
-            result["errors"].append(liq["error"])
-        return liq
+        # ⚠️ Binance /fapi/v1/allForceOrders déprécié ("endpoint out of maintenance")
+        # Désactivé en v6.0.4b — prévu remplacement via CoinGlass en v6.1
+        return {
+            "long_liq_usdt": None, "short_liq_usdt": None,
+            "total_liq_usdt": None, "liq_imbalance": None,
+            "largest_liq_usdt": None, "liq_count": None,
+            "liq_window_min": LIQ_LOOKBACK_MINUTES, "error": None
+        }
 
     # Appels parallèles (5 endpoints indépendants)
     with ThreadPoolExecutor(max_workers=5) as ex:
@@ -916,19 +926,17 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
             "v6_data_errors": fd.get("errors", [])
         }
 
-    # ── Qualité data : si < 3 familles d'indicateurs sur 6, le veto a déjà été passé ─
-    # Familles : OI, taker, L/S global, L/S top, funding, liquidations.
-    # On conserve alors le score technique tel quel (pas de pénalité artificielle).
+    # Qualité data : si < 3 familles d'indicateurs sur 5 disponibles
+    # (liquidations exclues : endpoint Binance déprécié depuis v6.0.4b)
     available_count = sum([
         fd.get("oi_change_pct")        is not None,
         fd.get("taker_buy_ratio")      is not None,
         fd.get("ls_global_long_ratio") is not None,
         fd.get("ls_top_long_ratio")    is not None,
         fd.get("funding_rate")         is not None,
-        fd.get("total_liq_usdt")       is not None,
     ])
     if available_count < 3:
-        logger.warning("V6 data insuffisante %s (%d/6 indicateurs) — score technique conservé (veto déjà passé)",
+        logger.warning("V6 data insuffisante %s (%d/5 indicateurs) — score technique conservé (veto déjà passé)",
                        symbol, available_count)
         return {
             "v6_accepted": True,
@@ -937,7 +945,7 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
             "v6_score_futures": None,
             "v6_futures_detail": {},
             "v6_futures_raw": {k: fd.get(k) for k in ["oi_change_pct", "taker_buy_ratio", "taker_sell_ratio", "ls_global_long_ratio", "ls_top_long_ratio", "long_liq_usdt", "short_liq_usdt", "total_liq_usdt", "liq_imbalance", "largest_liq_usdt", "liq_count", "liq_window_min"]},
-            "v6_data_errors": fd.get("errors", []) + [f"insufficient futures data ({available_count}/6)"]
+            "v6_data_errors": fd.get("errors", []) + [f"insufficient futures data ({available_count}/5)"]
         }
 
     # ── COUCHE 3 — Score futures ──────────────────────────────────────────────
@@ -2889,7 +2897,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.4-futures-liquidations",
+        "version": "6.0.4b-liq-disabled",
         "providers": results
     })
 
@@ -2898,7 +2906,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.4-futures-liquidations"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.4b-liq-disabled"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
