@@ -37,8 +37,17 @@ BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "true").lower() == "true"
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
-# ─── CONFIG V6.0.3 ─────────────────────────────────────────────────────────────
-# V6.0.3 : Logique RR hybride (RR-safe) post-review
+# ─── CONFIG V6.0.4 ─────────────────────────────────────────────────────────────
+# V6.0.4 : Module liquidations forcées (Binance allForceOrders)
+#   LIQ1 — fetch_liquidations_v6 : long_liq/short_liq/imbalance sur fenêtre configurable
+#   LIQ2 — scoring liquidations : +12/+6 si alignées, -12/-6 si opposées, -6 cascade extrême
+#   LIQ3 — FUTURES_RAW_MIN/MAX élargi à ±50 (absorbe les nouveaux points liquidations)
+#   LIQ4 — v6_futures_raw exposé dans tous les retours (données brutes visibles dans JSON/GPT)
+#   LIQ5 — taker_sell_ratio calculé et exposé
+#   LIQ6 — _safe_float() helper robuste pour payloads API incomplets
+#   LIQ7 — Tous les seuils liquidations externalisés en variables d'env (LIQ_NOTIONAL_*)
+#   --- héritées v6.0.3 ---
+#   RR hybride / SL technique / TP en R / contrôle réalisme / deux RR
 #   RR1 — SL reste TECHNIQUE (ATR plafonné), jamais éloigné pour gonfler le RR
 #   RR2 — TP en multiples de R : TP1=1R, TP2=2R, TP3=3R, TP4=5R, TP5=target_rr
 #   RR3 — CONTRÔLE DE RÉALISME du TP final : target_rr=8R si atteignable
@@ -85,9 +94,27 @@ LS_CROWD_MALUS          = -8   # foule trop chargée dans notre sens → -8
 LS_CROWD_THRESHOLD_LONG = 2.0  # ratio > 2 = trop de longs dans la foule
 LS_CROWD_THRESHOLD_SHORT= 0.5  # ratio < 0.5 = trop de shorts dans la foule
 
+# Couche 3 — Liquidations forcées (Binance Futures allForceOrders)
+# Dans les liquidation orders :
+#   side=SELL ≈ liquidation de LONGS (vente forcée)  → pression vendeuse
+#   side=BUY  ≈ liquidation de SHORTS (achat forcé) → pression acheteuse / squeeze
+LIQ_LOOKBACK_MINUTES      = int(os.environ.get("LIQ_LOOKBACK_MINUTES", "60"))
+LIQ_API_LIMIT             = int(os.environ.get("LIQ_API_LIMIT", "1000"))
+LIQ_NOTIONAL_SOFT_USDT    = float(os.environ.get("LIQ_NOTIONAL_SOFT_USDT", "50000"))
+LIQ_NOTIONAL_STRONG_USDT  = float(os.environ.get("LIQ_NOTIONAL_STRONG_USDT", "250000"))
+LIQ_NOTIONAL_EXTREME_USDT = float(os.environ.get("LIQ_NOTIONAL_EXTREME_USDT", "1000000"))
+# NOTE calibration : ces seuils sont calibrés pour BTC/ETH/SOL.
+# Pour les altcoins du universe (AVAX, LINK, etc.), les volumes de liquidations sont
+# souvent 10x–50x inférieurs. Surveiller les logs liq_count + total_liq_usdt sur 3–5 jours
+# post-déploiement et abaisser via variables d'env si le module reste systématiquement inactif.
+# Exemple altcoins : LIQ_NOTIONAL_SOFT_USDT=5000 / LIQ_NOTIONAL_STRONG_USDT=25000
+LIQ_IMBALANCE_STRONG      = float(os.environ.get("LIQ_IMBALANCE_STRONG", "0.65"))
+LIQ_EXTREME_MALUS_PTS     = -6   # volatilité/cascade : on réduit un peu le score même si aligné
+
 # Normalisation score futures (bornes du raw avant normalisation 0–100)
-FUTURES_RAW_MIN = -38.0
-FUTURES_RAW_MAX =  38.0
+# Élargi car on ajoute le module liquidations aux bonus/malus V6.0.4
+FUTURES_RAW_MIN = -50.0
+FUTURES_RAW_MAX =  50.0
 
 # Paramètres API futures data
 OI_PERIOD   = "1h"   # granularité OI history
@@ -488,16 +515,109 @@ def _fetch_futures_endpoint(path, params):
     url = f"https://fapi.binance.com{path}?{qs}"
     return fetch_binance(url)
 
+def _safe_float(value, default=0.0):
+    """Conversion float robuste pour les payloads API parfois incomplets."""
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def fetch_liquidations_v6(symbol):
+    """
+    Récupère les liquidations forcées récentes Binance USD-M Futures.
+
+    Endpoint utilisé : /fapi/v1/allForceOrders
+    Lecture interne :
+      - side=SELL = longs liquidés (vente forcée)  → pression vendeuse
+      - side=BUY  = shorts liquidés (achat forcé) → pression acheteuse
+
+    Retourne des montants notionnels USDT agrégés sur LIQ_LOOKBACK_MINUTES.
+    Si l'endpoint est bloqué/indisponible, retourne des champs à None sans bloquer le signal.
+    """
+    now_ms = int(time.time() * 1000)
+    start_ms = now_ms - LIQ_LOOKBACK_MINUTES * 60 * 1000
+
+    data = _fetch_futures_endpoint(
+        "/fapi/v1/allForceOrders",
+        {"symbol": symbol, "startTime": start_ms, "endTime": now_ms, "limit": LIQ_API_LIMIT}
+    )
+
+    if data is None:
+        return {
+            "long_liq_usdt": None,
+            "short_liq_usdt": None,
+            "total_liq_usdt": None,
+            "liq_imbalance": None,
+            "largest_liq_usdt": None,
+            "liq_count": None,
+            "liq_window_min": LIQ_LOOKBACK_MINUTES,
+            "error": "liquidations:no_data"
+        }
+
+    long_liq_usdt = 0.0   # longs liquidés => ordres forcés SELL
+    short_liq_usdt = 0.0  # shorts liquidés => ordres forcés BUY
+    largest_liq_usdt = 0.0
+    liq_count = 0
+
+    for row in data:
+        side = str(row.get("side", "")).upper()
+        qty = _safe_float(row.get("origQty", row.get("executedQty", 0)))
+        avg_price = _safe_float(row.get("avgPrice", 0))
+        price = avg_price if avg_price > 0 else _safe_float(row.get("price", 0))
+        notional = abs(qty * price)
+
+        if notional <= 0:
+            continue
+
+        liq_count += 1
+        largest_liq_usdt = max(largest_liq_usdt, notional)
+
+        if side == "SELL":
+            long_liq_usdt += notional
+        elif side == "BUY":
+            short_liq_usdt += notional
+
+    total_liq_usdt = long_liq_usdt + short_liq_usdt
+    if total_liq_usdt > 0:
+        # >0.5 = pression de liquidations longues (vendeuse), <0.5 = shorts liquidés (acheteuse)
+        liq_imbalance = long_liq_usdt / total_liq_usdt
+    else:
+        liq_imbalance = None
+
+    return {
+        "long_liq_usdt": round(long_liq_usdt, 2),
+        "short_liq_usdt": round(short_liq_usdt, 2),
+        "total_liq_usdt": round(total_liq_usdt, 2),
+        "liq_imbalance": round(liq_imbalance, 4) if liq_imbalance is not None else None,
+        "largest_liq_usdt": round(largest_liq_usdt, 2),
+        "liq_count": liq_count,
+        "liq_window_min": LIQ_LOOKBACK_MINUTES,
+        "error": None
+    }
+
+
 def fetch_futures_data_v6(symbol):
     """
-    Récupère en parallèle les 4 indicateurs futures Binance pour un symbole.
+    Récupère en parallèle les indicateurs futures Binance pour un symbole :
+    OI, taker buy/sell, long/short global, top traders long/short, liquidations.
     Retourne un dict avec les valeurs brutes (None si indisponible).
     """
     result = {
         "oi_change_pct": None,
         "taker_buy_ratio": None,
+        "taker_sell_ratio": None,
         "ls_global_long_ratio": None,
         "ls_top_long_ratio": None,
+        "long_liq_usdt": None,
+        "short_liq_usdt": None,
+        "total_liq_usdt": None,
+        "liq_imbalance": None,
+        "largest_liq_usdt": None,
+        "liq_count": None,
+        "liq_window_min": LIQ_LOOKBACK_MINUTES,
         "errors": []
     }
 
@@ -556,16 +676,36 @@ def fetch_futures_data_v6(symbol):
                 result["errors"].append(f"ls_top:{e}")
         return None
 
-    # Appels parallèles (4 endpoints indépendants)
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    def _liquidations():
+        liq = fetch_liquidations_v6(symbol)
+        if liq.get("error"):
+            result["errors"].append(liq["error"])
+        return liq
+
+    # Appels parallèles (5 endpoints indépendants)
+    with ThreadPoolExecutor(max_workers=5) as ex:
         f_oi     = ex.submit(_oi)
         f_taker  = ex.submit(_taker)
         f_lsg    = ex.submit(_ls_global)
         f_lst    = ex.submit(_ls_top)
-        result["oi_change_pct"]       = f_oi.result()
-        result["taker_buy_ratio"]     = f_taker.result()
-        result["ls_global_long_ratio"]= f_lsg.result()
-        result["ls_top_long_ratio"]   = f_lst.result()
+        f_liq    = ex.submit(_liquidations)
+
+        result["oi_change_pct"]        = f_oi.result()
+        # f_taker.result() bloque jusqu'à complétion — taker_sell_ratio calculé juste après,
+        # une fois la valeur disponible (pas de risque de race condition).
+        result["taker_buy_ratio"]      = f_taker.result()
+        result["taker_sell_ratio"]     = round(1 - result["taker_buy_ratio"], 4) if result["taker_buy_ratio"] is not None else None
+        result["ls_global_long_ratio"] = f_lsg.result()
+        result["ls_top_long_ratio"]    = f_lst.result()
+
+        liq = f_liq.result() or {}
+        result["long_liq_usdt"]        = liq.get("long_liq_usdt")
+        result["short_liq_usdt"]       = liq.get("short_liq_usdt")
+        result["total_liq_usdt"]       = liq.get("total_liq_usdt")
+        result["liq_imbalance"]        = liq.get("liq_imbalance")
+        result["largest_liq_usdt"]     = liq.get("largest_liq_usdt")
+        result["liq_count"]            = liq.get("liq_count")
+        result["liq_window_min"]       = liq.get("liq_window_min")
 
     return result
 
@@ -692,6 +832,36 @@ def compute_futures_score_v6(fd, direction):
     raw += ls_pts
     breakdown["long_short"] = ls_pts
 
+    # — Liquidations forcées —
+    # LONG : shorts liquidés (BUY forcés) = soutien potentiel / squeeze.
+    # SHORT : longs liquidés (SELL forcés) = pression vendeuse potentielle.
+    liq_pts = 0
+    total_liq = fd.get("total_liq_usdt")
+    long_liq = fd.get("long_liq_usdt")     # longs liquidés => SELL
+    short_liq = fd.get("short_liq_usdt")   # shorts liquidés => BUY
+    liq_imb = fd.get("liq_imbalance")      # long_liq / total_liq
+
+    if total_liq is not None and total_liq >= LIQ_NOTIONAL_SOFT_USDT and long_liq is not None and short_liq is not None:
+        aligned_liq = short_liq if is_long else long_liq
+        opposite_liq = long_liq if is_long else short_liq
+        aligned_share = aligned_liq / total_liq if total_liq > 0 else 0
+
+        if total_liq >= LIQ_NOTIONAL_EXTREME_USDT:
+            liq_pts += LIQ_EXTREME_MALUS_PTS  # cascade = volatilité, même si alignée
+
+        if aligned_liq >= LIQ_NOTIONAL_STRONG_USDT and aligned_share >= LIQ_IMBALANCE_STRONG:
+            liq_pts += 12
+        elif aligned_liq >= LIQ_NOTIONAL_SOFT_USDT and aligned_share >= 0.55:
+            liq_pts += 6
+
+        if opposite_liq >= LIQ_NOTIONAL_STRONG_USDT and (1 - aligned_share) >= LIQ_IMBALANCE_STRONG:
+            liq_pts -= 12
+        elif opposite_liq >= LIQ_NOTIONAL_SOFT_USDT and (1 - aligned_share) >= 0.55:
+            liq_pts -= 6
+
+    raw += liq_pts
+    breakdown["liquidations"] = liq_pts
+
     # Normalisation 0..100
     raw_clamped  = max(FUTURES_RAW_MIN, min(FUTURES_RAW_MAX, raw))
     normalized   = (raw_clamped - FUTURES_RAW_MIN) / (FUTURES_RAW_MAX - FUTURES_RAW_MIN) * 100
@@ -724,9 +894,9 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
             "v6_data_errors": ["skipped: tech score gate"]
         }
 
-    # Récupération données futures (4 appels parallèles)
+    # Récupération données futures (5 appels parallèles : OI, taker, LS global, LS top, liquidations)
     fd = fetch_futures_data_v6(symbol)
-    # Injecter funding_rate déjà récupéré dans score_symbol (évite un 5e appel)
+    # Injecter funding_rate déjà récupéré dans score_symbol (évite un 6e appel)
     fd["funding_rate"] = result_dict.get("funding_rate")
     fd["momentum_1h"]  = result_dict.get("momentum_1h", 0)
 
@@ -742,21 +912,23 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
             "v6_score_final": None,
             "v6_score_futures": None,
             "v6_futures_detail": {},
+            "v6_futures_raw": {k: fd.get(k) for k in ["oi_change_pct", "taker_buy_ratio", "taker_sell_ratio", "ls_global_long_ratio", "ls_top_long_ratio", "long_liq_usdt", "short_liq_usdt", "total_liq_usdt", "liq_imbalance", "largest_liq_usdt", "liq_count", "liq_window_min"]},
             "v6_data_errors": fd.get("errors", [])
         }
 
-    # ── Qualité data : si < 3 indicateurs sur 5, le veto a déjà été passé ──────
-    # On conserve alors le score technique tel quel (pas de pénalité artificielle),
-    # mais le trade reste autorisé puisqu'aucun veto dur ne s'est déclenché.
+    # ── Qualité data : si < 3 familles d'indicateurs sur 6, le veto a déjà été passé ─
+    # Familles : OI, taker, L/S global, L/S top, funding, liquidations.
+    # On conserve alors le score technique tel quel (pas de pénalité artificielle).
     available_count = sum([
         fd.get("oi_change_pct")        is not None,
         fd.get("taker_buy_ratio")      is not None,
         fd.get("ls_global_long_ratio") is not None,
         fd.get("ls_top_long_ratio")    is not None,
         fd.get("funding_rate")         is not None,
+        fd.get("total_liq_usdt")       is not None,
     ])
     if available_count < 3:
-        logger.warning("V6 data insuffisante %s (%d/5 indicateurs) — score technique conservé (veto déjà passé)",
+        logger.warning("V6 data insuffisante %s (%d/6 indicateurs) — score technique conservé (veto déjà passé)",
                        symbol, available_count)
         return {
             "v6_accepted": True,
@@ -764,7 +936,8 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
             "v6_score_final": technical_score,   # score inchangé, pas de pénalité
             "v6_score_futures": None,
             "v6_futures_detail": {},
-            "v6_data_errors": fd.get("errors", []) + [f"insufficient futures data ({available_count}/5)"]
+            "v6_futures_raw": {k: fd.get(k) for k in ["oi_change_pct", "taker_buy_ratio", "taker_sell_ratio", "ls_global_long_ratio", "ls_top_long_ratio", "long_liq_usdt", "short_liq_usdt", "total_liq_usdt", "liq_imbalance", "largest_liq_usdt", "liq_count", "liq_window_min"]},
+            "v6_data_errors": fd.get("errors", []) + [f"insufficient futures data ({available_count}/6)"]
         }
 
     # ── COUCHE 3 — Score futures ──────────────────────────────────────────────
@@ -779,6 +952,7 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
         "v6_score_final": score_final,
         "v6_score_futures": futures_norm,
         "v6_futures_detail": futures_breakdown,
+        "v6_futures_raw": {k: fd.get(k) for k in ["oi_change_pct", "taker_buy_ratio", "taker_sell_ratio", "ls_global_long_ratio", "ls_top_long_ratio", "long_liq_usdt", "short_liq_usdt", "total_liq_usdt", "liq_imbalance", "largest_liq_usdt", "liq_count", "liq_window_min"]},
         "v6_data_errors": fd.get("errors", [])
     }
 
@@ -1956,6 +2130,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "v6_score_final":    v6["v6_score_final"],
         "v6_score_futures":  v6["v6_score_futures"],
         "v6_futures_detail": v6["v6_futures_detail"],
+        "v6_futures_raw":    v6.get("v6_futures_raw", {}),
         "v6_data_errors":    v6["v6_data_errors"],
     }
 
@@ -2275,8 +2450,15 @@ def full_analysis():
                 f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
                 f"duration_label: {r['duration_label']} | "
                 f"v6_score_futures: {r.get('v6_score_futures')} | "
+                f"taker_buy_ratio: {r.get('v6_futures_raw',{}).get('taker_buy_ratio')} | "
+                f"taker_sell_ratio: {r.get('v6_futures_raw',{}).get('taker_sell_ratio')} | "
+                f"long_liq_usdt: {r.get('v6_futures_raw',{}).get('long_liq_usdt')} | "
+                f"short_liq_usdt: {r.get('v6_futures_raw',{}).get('short_liq_usdt')} | "
+                f"total_liq_usdt: {r.get('v6_futures_raw',{}).get('total_liq_usdt')} | "
+                f"liq_imbalance: {r.get('v6_futures_raw',{}).get('liq_imbalance')} | "
                 f"v6_futures_detail: oi={r.get('v6_futures_detail',{}).get('oi',0):+d} "
                 f"taker={r.get('v6_futures_detail',{}).get('taker',0):+d} "
+                f"liquidations={r.get('v6_futures_detail',{}).get('liquidations',0):+d} "
                 f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
                 f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
             )
@@ -2707,7 +2889,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.3-futures-layer",
+        "version": "6.0.4-futures-liquidations",
         "providers": results
     })
 
@@ -2716,7 +2898,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.3-futures-layer"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.4-futures-liquidations"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
