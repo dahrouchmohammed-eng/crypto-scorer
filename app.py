@@ -38,7 +38,16 @@ HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
 # ─── CONFIG V6.0.5 ─────────────────────────────────────────────────────────────
-# V6.0.6c : Fix OI threshold bug
+# V6.0.6e : Fix source taker_buy/sell_ratio
+#   FIX — taker_buy_ratio et taker_sell_ratio lus depuis v6_futures_raw (source fiable)
+#         (avant : r.get("taker_buy_ratio") = champ inexistant au niveau signal)
+#   --- héritées v6.0.6d ---
+#   oi_change_pct / funding_signal / derivatives_note
+#   DBG1 — oi_change_pct : variation OI brute (depuis v6_futures_raw)
+#   DBG2 — taker_sell_ratio : calculé depuis taker_buy_ratio
+#   DBG3 — funding_signal + derivatives_note
+#   --- héritées v6.0.6c ---
+#   Fix OI threshold hardcodé
 #   BUG — compute_futures_score_v6 utilisait encore des seuils OI hardcodés (0.05/0.10/0.20)
 #         malgré OI_BONUS_TABLE recalibrée → oi=+0 persistant
 #   FIX — Bloc OI remplacé par _tiered_pts(OI_BONUS_TABLE/OI_MALUS_TABLE) + price_aligned
@@ -336,7 +345,7 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "volume_relatif":     r.get("volume_relatif"),
         "vol_penalty_note":   r.get("vol_penalty_note", ""),
         "late_entry_risk":    r.get("late_entry_risk"),
-        "taker_buy_ratio":    r.get("taker_buy_ratio"),
+        "taker_buy_ratio":    r.get("v6_futures_raw", {}).get("taker_buy_ratio"),
         "v6_score_futures":   r.get("v6_score_futures"),
         "tp_realism_note":    r.get("tp_realism_note", ""),
         "v6_futures_detail":  (
@@ -345,6 +354,16 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
             f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
             f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
         ) if r.get("v6_futures_detail") else "",
+        # ── Champs debug/calibration v6.0.7 ─────────────────────────────────
+        # Tous les champs bruts depuis v6_futures_raw (source unique fiable)
+        "oi_change_pct":      r.get("v6_futures_raw", {}).get("oi_change_pct"),
+        "taker_buy_ratio":    r.get("v6_futures_raw", {}).get("taker_buy_ratio"),
+        "taker_sell_ratio":   r.get("v6_futures_raw", {}).get("taker_sell_ratio") or (
+            round(1 - r.get("v6_futures_raw", {}).get("taker_buy_ratio"), 4)
+            if r.get("v6_futures_raw", {}).get("taker_buy_ratio") is not None else None
+        ),
+        "funding_signal":     r.get("funding_signal", ""),
+        "derivatives_note":   r.get("derivatives_note", ""),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
@@ -2939,7 +2958,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6c-oi-threshold-fix",
+        "version": "6.0.6e-debug-fields-fix",
         "providers": results
     })
 
@@ -2948,7 +2967,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6c-oi-threshold-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6e-debug-fields-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
