@@ -316,6 +316,20 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "trend_strength":  r.get("trend_strength"),
         "rsi":             r.get("rsi"),
         "position_range":  r.get("position_range"),
+        # ── Champs qualité signal v6.0.6 ────────────────────────────────────
+        "prescore":           r.get("prescore"),
+        "volume_relatif":     r.get("volume_relatif"),
+        "vol_penalty_note":   r.get("vol_penalty_note", ""),
+        "late_entry_risk":    r.get("late_entry_risk"),
+        "taker_buy_ratio":    r.get("taker_buy_ratio"),
+        "v6_score_futures":   r.get("v6_score_futures"),
+        "tp_realism_note":    r.get("tp_realism_note", ""),
+        "v6_futures_detail":  (
+            f"oi={r.get('v6_futures_detail',{}).get('oi',0):+d} "
+            f"taker={r.get('v6_futures_detail',{}).get('taker',0):+d} "
+            f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
+            f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
+        ) if r.get("v6_futures_detail") else "",
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
