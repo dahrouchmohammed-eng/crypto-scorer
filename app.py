@@ -38,7 +38,14 @@ HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
 # ─── CONFIG V6.0.5 ─────────────────────────────────────────────────────────────
-# V6.0.5c : Tech gate non bloquant
+# V6.0.6 : Règle confirmation futures MOMENTUM
+#   CF1 — futures_support = nb indicateurs positifs (OI, Taker, Funding, L/S)
+#   CF2 — MOMENTUM + vol < 0.50 + futures_support < 2 → WATCHLIST
+#   CF3 — Exception : taker >= +8 → CANDIDAT maintenu (flux court terme suffisant)
+#   CF4 — vol < 0.30 → WATCHLIST direct sans exception
+#   CF5 — caps : confidence ≤60 (vol<0.30) ou ≤65 (vol<0.50) + levier ≤3x
+#   --- héritées v6.0.5c ---
+#   Tech gate non bloquant / pénalité volume MOMENTUM
 #   FIX — gate < 58 retournait v6_accepted=False → flag REJET systématique
 #         Corrigé : v6_accepted=True, score technique conservé, flag naturel
 #         WATCHLIST si score ≥52, REJET si score <52 (comportement voulu)
@@ -2028,30 +2035,49 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
             flag = "WATCHLIST"
 
-    # ── V6.0.5b — Ré-appliquer le garde-fou volume APRÈS recombinaison V6 ──
-    # Le bloc V6 ci-dessus peut recalculer le flag à partir du score combiné 70/30.
-    # Sans cette réapplication, un MOMENTUM avec volume très faible peut repasser
-    # de WATCHLIST à CANDIDAT après la couche futures.
+    # ── V6.0.6 — RÈGLE CONFIRMATION FUTURES (post-recombinaison V6) ───────────
+    # Objectif : séparer "signal technique seul" (→ WATCHLIST) de
+    # "signal technique + flux futures" (→ CANDIDAT).
+    #
+    # Règle : CANDIDAT + MOMENTUM + volume < 0.50 + futures_support < 2
+    #         → WATCHLIST (sauf exception taker fort)
+    #
+    # Exception : si taker >= +8, le flux est réel et suffisant → CANDIDAT maintenu.
+    # Pourquoi : le taker est l'indicateur court terme le plus fiable.
+    #   Ex: taker +8 avec sell ratio 60%+ sur un SHORT = confirmation claire.
+    #
+    # futures_support = nb d'indicateurs futures positifs parmi : OI, Taker, Funding, L/S
+    # Note : funding=+4 (neutre/favorable) compte comme positif mais est le moins fiable.
     if entry_type == "MOMENTUM" and flag == "CANDIDAT":
+        futures_detail = v6.get("v6_futures_detail", {}) or {}
+        taker_pts      = futures_detail.get("taker", 0)
+        futures_support = sum([
+            futures_detail.get("oi",          0) > 0,
+            taker_pts                              > 0,
+            futures_detail.get("long_short",   0) > 0,
+            futures_detail.get("funding",      0) > 0,
+        ])
+
+        # Cas 1 : volume très faible (< 0.30) → WATCHLIST direct, pas d'exception
         if relative_vol < 0.30:
-            flag = "WATCHLIST"
+            flag       = "WATCHLIST"
             confidence = min(confidence, 60)
             max_leverage = min(max_leverage, 3)
-            logger.info("V6.0.5b maintien WATCHLIST %s après V6: volume très faible (%.2fx)", symbol, relative_vol)
-        elif relative_vol < 0.50:
-            # Volume faible + futures peu confirmantes : éviter un CANDIDAT trop affirmé.
-            futures_detail = v6.get("v6_futures_detail", {}) or {}
-            futures_support = sum([
-                futures_detail.get("oi", 0) > 0,
-                futures_detail.get("taker", 0) > 0,
-                futures_detail.get("long_short", 0) > 0,
-                futures_detail.get("funding", 0) > 0,
-            ])
-            if futures_support < 2:
-                flag = "WATCHLIST"
+            logger.info("V6.0.6 WATCHLIST %s: volume très faible (%.2fx) — confirmation futures ignorée",
+                        symbol, relative_vol)
+
+        # Cas 2 : volume faible (0.30–0.50) + futures_support < 2
+        elif relative_vol < 0.50 and futures_support < 2:
+            # Exception : taker fort (≥ +8) = confirmation suffisante, CANDIDAT maintenu
+            if taker_pts >= 8:
+                logger.info("V6.0.6 CANDIDAT maintenu %s: taker fort (%+d pts) malgré volume faible (%.2fx)",
+                            symbol, taker_pts, relative_vol)
+            else:
+                flag       = "WATCHLIST"
                 confidence = min(confidence, 65)
                 max_leverage = min(max_leverage, 3)
-                logger.info("V6.0.5b WATCHLIST %s: volume faible + futures peu confirmantes (%d/4)", symbol, futures_support)
+                logger.info("V6.0.6 WATCHLIST %s: volume faible (%.2fx) + futures_support %d/4 + taker faible (%+d pts)",
+                            symbol, relative_vol, futures_support, taker_pts)
 
     # Durée estimée calculée par Python
     if trend_strength == "strong":
@@ -2887,7 +2913,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.5c-gate-nonblocking",
+        "version": "6.0.6-futures-confirmation",
         "providers": results
     })
 
@@ -2896,7 +2922,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.5c-gate-nonblocking"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6-futures-confirmation"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
