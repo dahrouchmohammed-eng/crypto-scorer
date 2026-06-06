@@ -37,8 +37,16 @@ BINANCE_ENABLED = os.environ.get("BINANCE_ENABLED", "true").lower() == "true"
 HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
-# ─── CONFIG V6.0.4c ────────────────────────────────────────────────────────────
-# V6.0.4c : Module liquidations désactivé proprement
+# ─── CONFIG V6.0.5 ─────────────────────────────────────────────────────────────
+# V6.0.5b : Pénalité volume relatif faible + garde-fou post-V6 (MOMENTUM uniquement)
+#   VOL1 — volume < 0.50 : pénalité -8 pts (score)
+#   VOL2 — volume < 0.30 : pénalité -15 pts + rétrogradation CANDIDAT → WATCHLIST
+#   VOL3 — volume < 0.15 : pénalité -20 pts + WATCHLIST + levier cap 3x
+#   VOL4 — EARLY exclu (volume faible normal avant départ)
+#   VOL5 — BREAKOUT exclu (déjà protégé par relative_vol >= 1.3)
+#   VOL6 — vol_penalty_note exposé dans JSON et texte GPT
+#   --- héritées v6.0.4c ---
+#   liquidations désactivées / FUTURES_RAW ±38 / 4 appels parallèles
 #   FIX — /fapi/v1/allForceOrders déprécié par Binance ("endpoint out of maintenance")
 #         Appel remplacé par stub None — zéro appel réseau inutile par cycle
 #         available_count repassé à 5 (liquidations exclues)
@@ -1682,6 +1690,27 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # 10. Pénalité légère early entry (moins fiable que momentum)
     if entry_type == "EARLY": global_score -= 5
 
+    # ── V6.0.5 — PÉNALITÉ VOLUME RELATIF FAIBLE (MOMENTUM uniquement) ────────
+    # EARLY exclu : volume faible normal avant départ du mouvement.
+    # BREAKOUT déjà protégé : condition relative_vol >= 1.3 dans la détection.
+    # MOMENTUM : un volume faible signale un mouvement de prix non soutenu.
+    vol_penalty = 0
+    vol_penalty_note = ""
+    if entry_type == "MOMENTUM":
+        if relative_vol < 0.15:
+            vol_penalty = -20
+            vol_penalty_note = f"volume très faible ({relative_vol:.2f}x moyenne)"
+        elif relative_vol < 0.30:
+            vol_penalty = -15
+            vol_penalty_note = f"volume faible ({relative_vol:.2f}x moyenne)"
+        elif relative_vol < 0.50:
+            vol_penalty = -8
+            vol_penalty_note = f"volume modérément faible ({relative_vol:.2f}x moyenne)"
+    if vol_penalty < 0:
+        global_score = max(0, global_score + vol_penalty)
+        logger.info("V6.0.5 pénalité volume %s: %s (%+d pts) → score %.1f",
+                    symbol, vol_penalty_note, vol_penalty, global_score)
+
     # 11. SPOT FALLBACK : accepté temporairement, mais moins fiable pour futures.
     if data_source == "SPOT_FALLBACK":
         global_score -= 8
@@ -1711,6 +1740,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
         flag = "WATCHLIST"
+
+    # ── V6.0.5 — RÉTROGRADATION + CAP LEVIER si volume MOMENTUM très faible ──
+    if entry_type == "MOMENTUM":
+        if relative_vol < 0.15:
+            # Volume extrêmement faible : rétrogradation forcée + levier plafonné à 3x
+            if flag == "CANDIDAT":
+                flag = "WATCHLIST"
+                logger.info("V6.0.5 rétrogradation WATCHLIST %s: volume critique (%.2fx)", symbol, relative_vol)
+        elif relative_vol < 0.30:
+            # Volume très faible : rétrogradation forcée
+            if flag == "CANDIDAT":
+                flag = "WATCHLIST"
+                logger.info("V6.0.5 rétrogradation WATCHLIST %s: volume très faible (%.2fx)", symbol, relative_vol)
 
     # ── CALCULS ENTRY / SL / TP / RR — Python calcule, GPT formate ───────────
 
@@ -1851,6 +1893,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if flag == "SHORT_WATCH":       leverage_caps.append(1)
     if late_entry_risk >= 55:        leverage_caps.append(3)
     if data_source == "SPOT_FALLBACK": leverage_caps.append(5)
+    # V6.0.5 — Volume MOMENTUM critique : cap levier 3x
+    if entry_type == "MOMENTUM" and relative_vol < 0.15:
+        leverage_caps.append(3)
     # Sécurité macro : réduire fortement le levier si le trade est contre le régime BTC
     if (market_regime == "bearish" and direction == "LONG") or \
        (market_regime == "bullish" and direction == "SHORT"):
@@ -1973,6 +2018,31 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
             flag = "WATCHLIST"
 
+    # ── V6.0.5b — Ré-appliquer le garde-fou volume APRÈS recombinaison V6 ──
+    # Le bloc V6 ci-dessus peut recalculer le flag à partir du score combiné 70/30.
+    # Sans cette réapplication, un MOMENTUM avec volume très faible peut repasser
+    # de WATCHLIST à CANDIDAT après la couche futures.
+    if entry_type == "MOMENTUM" and flag == "CANDIDAT":
+        if relative_vol < 0.30:
+            flag = "WATCHLIST"
+            confidence = min(confidence, 60)
+            max_leverage = min(max_leverage, 3)
+            logger.info("V6.0.5b maintien WATCHLIST %s après V6: volume très faible (%.2fx)", symbol, relative_vol)
+        elif relative_vol < 0.50:
+            # Volume faible + futures peu confirmantes : éviter un CANDIDAT trop affirmé.
+            futures_detail = v6.get("v6_futures_detail", {}) or {}
+            futures_support = sum([
+                futures_detail.get("oi", 0) > 0,
+                futures_detail.get("taker", 0) > 0,
+                futures_detail.get("long_short", 0) > 0,
+                futures_detail.get("funding", 0) > 0,
+            ])
+            if futures_support < 2:
+                flag = "WATCHLIST"
+                confidence = min(confidence, 65)
+                max_leverage = min(max_leverage, 3)
+                logger.info("V6.0.5b WATCHLIST %s: volume faible + futures peu confirmantes (%d/4)", symbol, futures_support)
+
     # Durée estimée calculée par Python
     if trend_strength == "strong":
         duration_label = "24 à 72h"
@@ -2013,6 +2083,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "late_entry_risk": late_entry_risk,
         "late_entry_level": late_entry_level,
         "late_entry_flags": late_entry_flags,
+        "vol_penalty_note": vol_penalty_note,
         "momentum_1h":     momentum_1h,
         "momentum_3h":     momentum_3h,
         "market_danger_score": market_danger_score,
@@ -2353,6 +2424,7 @@ def full_analysis():
                 f"short_forbidden: {r.get('short_forbidden')} | short_forbidden_reasons: {','.join(r.get('short_forbidden_reasons', []))} | "
                 f"late_entry_risk: {r.get('late_entry_risk')} | late_entry_level: {r.get('late_entry_level')} | "
                 f"late_entry_flags: {','.join(r.get('late_entry_flags', []))} | "
+                f"vol_penalty: {r.get('vol_penalty_note', '')} | "
                 f"market_regime: {r['market_regime']} | market_danger_level: {r.get('market_danger_level')} | "
                 f"data_source: {r.get('data_source', data_source_run)} | "
                 f"source_quality: {r.get('source_quality', source_quality_label(r.get('data_source', data_source_run)))} | "
@@ -2805,7 +2877,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.4c-liq-disabled-clean",
+        "version": "6.0.5b-vol-penalty-postv6-fix",
         "providers": results
     })
 
@@ -2814,7 +2886,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.4c-liq-disabled-clean"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.5b-vol-penalty-postv6-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
