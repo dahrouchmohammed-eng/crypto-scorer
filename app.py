@@ -38,7 +38,13 @@ HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
 # ─── CONFIG V6.0.5 ─────────────────────────────────────────────────────────────
-# V6.0.5b : Pénalité volume relatif faible + garde-fou post-V6 (MOMENTUM uniquement)
+# V6.0.5c : Tech gate non bloquant
+#   FIX — gate < 58 retournait v6_accepted=False → flag REJET systématique
+#         Corrigé : v6_accepted=True, score technique conservé, flag naturel
+#         WATCHLIST si score ≥52, REJET si score <52 (comportement voulu)
+#         ETH 54.0 → WATCHLIST ✓ | NEAR 53.8 → WATCHLIST ✓ | SOL 47.1 → REJET ✓
+#   --- héritées v6.0.5b ---
+#   Pénalité volume MOMENTUM / garde-fou post-V6
 #   VOL1 — volume < 0.50 : pénalité -8 pts (score)
 #   VOL2 — volume < 0.30 : pénalité -15 pts + rétrogradation CANDIDAT → WATCHLIST
 #   VOL3 — volume < 0.15 : pénalité -20 pts + WATCHLIST + levier cap 3x
@@ -809,15 +815,19 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
       v6_futures_detail: dict breakdown
       v6_data_errors   : list[str]
     """
-    # On ne lance pas les appels API si le score technique est trop bas (économie réseau)
+    # Gate technique : si score trop faible, pas d'appels API futures (économie réseau),
+    # mais v6_accepted=True — le flag naturel est conservé (WATCHLIST si ≥52, REJET si <52).
+    # Avant v6.0.5c : v6_accepted=False forçait REJET → trop dur pour les signaux
+    # affaiblis par la pénalité volume qui méritent encore une surveillance.
     if technical_score < FUTURES_TECH_SCORE_GATE:
         return {
-            "v6_accepted": False,
-            "v6_veto_reasons": [f"score technique {technical_score} < seuil {FUTURES_TECH_SCORE_GATE}"],
-            "v6_score_final": None,
+            "v6_accepted": True,
+            "v6_veto_reasons": [],
+            "v6_score_final": technical_score,
             "v6_score_futures": None,
             "v6_futures_detail": {},
-            "v6_data_errors": ["skipped: tech score gate"]
+            "v6_futures_raw": {},
+            "v6_data_errors": [f"skipped futures: tech score {technical_score} < gate {FUTURES_TECH_SCORE_GATE}"]
         }
 
     # Récupération données futures (4 appels réseau : OI, taker, LS global, LS top)
@@ -2877,7 +2887,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.5b-vol-penalty-postv6-fix",
+        "version": "6.0.5c-gate-nonblocking",
         "providers": results
     })
 
@@ -2886,7 +2896,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.5b-vol-penalty-postv6-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.5c-gate-nonblocking"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
