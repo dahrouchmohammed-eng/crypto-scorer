@@ -38,7 +38,18 @@ HTTP_TIMEOUT  = int(os.environ.get("HTTP_TIMEOUT", "8"))
 HTTP_RETRIES  = int(os.environ.get("HTTP_RETRIES", "2"))
 
 # ─── CONFIG V6.0.5 ─────────────────────────────────────────────────────────────
-# V6.0.6 : Règle confirmation futures MOMENTUM
+# V6.0.6c : Fix OI threshold bug
+#   BUG — compute_futures_score_v6 utilisait encore des seuils OI hardcodés (0.05/0.10/0.20)
+#         malgré OI_BONUS_TABLE recalibrée → oi=+0 persistant
+#   FIX — Bloc OI remplacé par _tiered_pts(OI_BONUS_TABLE/OI_MALUS_TABLE) + price_aligned
+#   --- héritées v6.0.6b ---
+#   Recalibrage OI (÷10) + Taker (53%/58%/65%)
+#   CAL1 — OI : seuils ÷10 (0.5%/1%/2% au lieu de 5%/10%/20%)
+#   CAL2 — Taker : seuils abaissés (53%/58%/65% au lieu de 60%/70%)
+#   CAL3 — Taker malus enrichi : 3 paliers (47%/42%/35%)
+#   Raison : oi=+0 et taker=+0 systématiques → données bien reçues mais seuils hors marché
+#   --- héritées v6.0.6 ---
+#   Règle confirmation futures MOMENTUM
 #   CF1 — futures_support = nb indicateurs positifs (OI, Taker, Funding, L/S)
 #   CF2 — MOMENTUM + vol < 0.50 + futures_support < 2 → WATCHLIST
 #   CF3 — Exception : taker >= +8 → CANDIDAT maintenu (flux court terme suffisant)
@@ -102,12 +113,16 @@ VETO_MIN_RR_V6          = 3.0      # RR réaliste < 3 → veto
 # Liquidité : utilise MIN_QUOTE_VOLUME_USDT existant
 
 # Couche 3 — Barème bonus/malus Open Interest
-OI_BONUS_TABLE = [(0.20, 12), (0.10, 8), (0.05, 4)]
-OI_MALUS_TABLE = [(-0.10, -12), (-0.05, -6)]
+# Seuils recalibrés v6.0.6b : OI varie de 0.1% à 2%/h en conditions normales.
+# Anciens seuils (5%/10%/20%) ne se déclenchaient jamais → oi=+0 systématique.
+OI_BONUS_TABLE = [(0.02, 12), (0.01, 8), (0.005, 4)]   # +2% / +1% / +0.5%
+OI_MALUS_TABLE = [(-0.02, -12), (-0.01, -6)]            # -2% / -1%
 
 # Couche 3 — Barème bonus/malus Taker buy ratio
-TAKER_BONUS_TABLE = [(0.70, 12), (0.60, 8)]
-TAKER_MALUS_TABLE = [(0.30, -8)]   # taker buy < 30% = vente dominante
+# Seuils recalibrés v6.0.6b : marché calme = taker entre 45-55%.
+# Anciens seuils (70%/60%) trop stricts → taker=+0 systématique.
+TAKER_BONUS_TABLE = [(0.65, 12), (0.58, 8), (0.53, 4)]   # pression acheteuse
+TAKER_MALUS_TABLE = [(0.35, -8), (0.42, -4), (0.47, -2)] # pression vendeuse
 
 # Couche 3 — Funding (bonus/malus doux, veto dur géré séparément)
 FUNDING_FAVORABLE_PTS   = 4      # funding neutre ou favorable → +4
@@ -751,24 +766,21 @@ def compute_futures_score_v6(fd, direction):
 
     # — Open Interest DIRECTIONNEL —
     # OI seul ne suffit pas : il faut que le prix confirme la direction
-    # OI↑ + prix dans notre sens = soutenu → bonus
-    # OI↑ + prix contre notre sens = dangereux → malus
-    # OI↓ = mouvement fragile → malus quelle que soit la direction
+    # OI↑ + prix dans notre sens = soutenu → bonus (OI_BONUS_TABLE)
+    # OI↑ + prix contre notre sens = divergence → malus doux (moitié du bonus)
+    # OI↓ = mouvement fragile → malus (OI_MALUS_TABLE)
     oi_chg = fd.get("oi_change_pct")
     if oi_chg is not None:
         price_aligned = (is_long and momentum_1h >= 0) or (not is_long and momentum_1h <= 0)
-        if oi_chg >= 0.20:
-            pts = 12 if price_aligned else -6
-        elif oi_chg >= 0.10:
-            pts = 8  if price_aligned else -4
-        elif oi_chg >= 0.05:
-            pts = 4  if price_aligned else -2
-        elif oi_chg <= -0.10:
-            pts = -12
-        elif oi_chg <= -0.05:
-            pts = -6
+        if oi_chg > 0:
+            base_pts = _tiered_pts(oi_chg, OI_BONUS_TABLE, [])
+            if price_aligned:
+                pts = base_pts
+            else:
+                # OI monte mais prix contre notre direction = divergence, malus doux
+                pts = -max(2, int(abs(base_pts) / 2)) if base_pts > 0 else 0
         else:
-            pts = 0
+            pts = _tiered_pts(oi_chg, [], OI_MALUS_TABLE)
         raw += pts
         breakdown["oi"] = pts
 
@@ -2927,7 +2939,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6-futures-confirmation",
+        "version": "6.0.6c-oi-threshold-fix",
         "providers": results
     })
 
@@ -2936,7 +2948,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6-futures-confirmation"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6c-oi-threshold-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
