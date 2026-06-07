@@ -2727,11 +2727,50 @@ def full_analysis():
         # Les fallbacks watchlist/short_watch sont déjà à 1, le cap ne les change pas.
         candidats = cap_signal_count(candidats, market_regime, data_source_run)
 
+        # ── top_watchlist / top_rejected — visibilité même sur SKIP ──────────
+        _all_watchlist = sorted(
+            [r for r in results if r.get("flag") == "WATCHLIST"],
+            key=lambda x: x.get("score", 0), reverse=True
+        )
+        _all_rejected = sorted(
+            [r for r in results if r.get("flag") == "REJET"],
+            key=lambda x: x.get("score", 0), reverse=True
+        )
+
+        def _debug_row(r):
+            return {
+                "symbol":           r.get("symbol"),
+                "score":            r.get("score"),
+                "direction":        r.get("direction"),
+                "entry_type":       r.get("entry_type"),
+                "confidence":       r.get("confidence"),
+                "volume_relatif":   r.get("volume_relatif"),
+                "v6_score_futures": r.get("v6_score_futures"),
+                "futures_support":  r.get("futures_support"),
+                "taker_score":      r.get("taker_score"),
+                "oi_score":         r.get("oi_score"),
+                "funding_score":    r.get("funding_score"),
+                "long_short_score": r.get("long_short_score"),
+                "risk_guard_reason":r.get("risk_guard_reason"),
+                "decision_explain": r.get("decision_explain"),
+                "vol_penalty_note": r.get("vol_penalty_note"),
+                "late_entry_risk":  r.get("late_entry_risk"),
+                "position_range":   r.get("position_range"),
+                "market_regime":    r.get("market_regime"),
+            }
+
+        top_watchlist = [_debug_row(r) for r in _all_watchlist[:5]]
+        top_rejected  = [_debug_row(r) for r in _all_rejected[:8]]
+
         if not candidats:
             return jsonify({
                 "text":             "SKIP",
                 "count":            0,
+                "telegram_count":   0,
                 "signals":          [],
+                "telegram_signals": [],
+                "top_watchlist":    top_watchlist,
+                "top_rejected":     top_rejected,
                 "market_regime":    market_regime,
                 "market_danger":    market_details,
                 "data_source":      data_source_run,
@@ -2828,6 +2867,8 @@ def full_analysis():
             "telegram_count":   len(telegram_signals),
             "signals":          signals,
             "telegram_signals": telegram_signals,
+            "top_watchlist":    top_watchlist,
+            "top_rejected":     top_rejected,
             "market_regime":    market_regime,
             "market_danger":    market_details,
             "data_source":      data_source_run,
@@ -3241,7 +3282,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6g-clean-dedup-ready",
+        "version": "6.0.6g-top-watchlist-debug",
         "providers": results
     })
 
@@ -3250,7 +3291,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-clean-dedup-ready"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-top-watchlist-debug"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
