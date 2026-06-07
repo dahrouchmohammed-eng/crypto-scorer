@@ -2289,6 +2289,13 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     executable_signal = (flag == "CANDIDAT")
 
+    # ── Harmonisation finale decision_explain / flag ──────────────────────────
+    # Évite les incohérences "WATCHLIST : ..." dans un signal REJET et vice-versa
+    if flag == "REJET" and decision_explain.startswith("WATCHLIST"):
+        decision_explain = f"REJET : {risk_guard_reason}."
+    elif flag == "WATCHLIST" and decision_explain.startswith("REJET"):
+        decision_explain = f"WATCHLIST : {risk_guard_reason}."
+
     if not decision_explain:
         if flag == "CANDIDAT":
             decision_explain = f"CANDIDAT : taker {taker_pts:+d}, futures_support {futures_support}/4, volume {relative_vol:.2f}x."
@@ -3282,7 +3289,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6g-top-watchlist-debug",
+        "version": "6.0.6g-decision-explain-fix",
         "providers": results
     })
 
@@ -3291,7 +3298,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-top-watchlist-debug"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-decision-explain-fix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
