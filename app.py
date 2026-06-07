@@ -212,6 +212,48 @@ MAJORS    = {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
 COOLDOWN_FILE    = "/tmp/cooldown.json"
 COOLDOWN_SECONDS = 4 * 3600
 
+# ── Anti-doublon intra-session (v6.0.6g) ──────────────────────────────────────
+# Track les setup_ids émis en mémoire avec timestamp.
+# Bloque un setup_id identique dans les 60 minutes suivant son émission,
+# sans attendre que Make appelle /set_cooldown.
+# Reset automatique au redémarrage du service (comportement voulu).
+_SETUP_ID_LOCK = threading.Lock()
+_emitted_setup_ids: dict = {}   # {setup_id: timestamp_emitted}
+SETUP_ID_BLOCK_SECONDS = 3600   # 60 minutes
+
+def is_setup_id_blocked(setup_id: str) -> bool:
+    with _SETUP_ID_LOCK:
+        ts = _emitted_setup_ids.get(setup_id)
+        if ts is None:
+            return False
+        if time.time() - ts > SETUP_ID_BLOCK_SECONDS:
+            del _emitted_setup_ids[setup_id]
+            return False
+        return True
+
+def mark_setup_id_emitted(setup_id: str):
+    with _SETUP_ID_LOCK:
+        _emitted_setup_ids[setup_id] = time.time()
+        # Purger les anciens
+        now = time.time()
+        expired = [k for k, v in _emitted_setup_ids.items()
+                   if now - v > SETUP_ID_BLOCK_SECONDS]
+        for k in expired:
+            del _emitted_setup_ids[k]
+
+
+def build_dedup_key(r):
+    """
+    Clé anti-doublon stable calculée AVANT build_signal_record.
+    Objectif : éviter de renvoyer le même symbole dans le même sens pendant
+    la fenêtre de blocage, même si le setup_id horaire change.
+    """
+    symbol = normalize_symbol(r.get("symbol", ""))
+    direction = str(r.get("direction", "")).upper().strip()
+    if not symbol or not direction:
+        return ""
+    return f"{symbol}-{direction}"
+
 def load_cooldown():
     try:
         if os.path.exists(COOLDOWN_FILE):
@@ -248,10 +290,33 @@ def set_cooldown_symbols(symbols):
     with _COOLDOWN_LOCK:
         cooldown = load_cooldown()
         now = time.time()
+
+        # Garder uniquement les cooldowns symboles au format numérique.
+        # Les clés techniques setup_ids/setup_ids_ts ne doivent jamais passer
+        # dans le calcul now - v, sinon le JSON de cooldown peut provoquer un 500.
+        cleaned = {
+            k: v for k, v in cooldown.items()
+            if k not in ("setup_ids", "setup_ids_ts")
+            and isinstance(v, (int, float))
+            and now - v < COOLDOWN_SECONDS
+        }
+
         for symbol in symbols:
-            cooldown[symbol] = now
-        cooldown = {k: v for k, v in cooldown.items() if now - v < COOLDOWN_SECONDS}
-        save_cooldown(cooldown)
+            symbol = normalize_symbol(symbol)
+            if symbol:
+                cleaned[symbol] = now
+
+        # Préserver les setup_ids / dedup_keys séparément.
+        setup_ids_ts = cooldown.get("setup_ids_ts", {})
+        if isinstance(setup_ids_ts, dict):
+            setup_ids_ts = {
+                str(k): v for k, v in setup_ids_ts.items()
+                if isinstance(v, (int, float)) and now - v < COOLDOWN_SECONDS
+            }
+            cleaned["setup_ids"] = list(setup_ids_ts.keys())
+            cleaned["setup_ids_ts"] = setup_ids_ts
+
+        save_cooldown(cleaned)
 
 # ─── LOG DES SIGNAUX (traçabilité performance) ──────────────────────────────────
 # Chaque signal émis est journalisé en JSONL pour pouvoir, plus tard, mesurer
@@ -312,6 +377,7 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
     return {
         "signal_id":       f"{symbol}-{emitted_ts}",
         "setup_id":        setup_id,
+        "dedup_key":       r.get("dedup_key") or build_dedup_key(r),
         "timestamp":       datetime.fromtimestamp(emitted_ts, tz=timezone.utc).isoformat(),
         "symbol":          symbol,
         "direction":       r.get("direction"),
@@ -2173,6 +2239,43 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         max_leverage = min(max_leverage, 3)
         logger.info("V6.0.6f forced_watchlist %s: %s", symbol, risk_guard_reason)
 
+    # ── V6.0.6g — Règle 1 : futures score minimum pour MOMENTUM CANDIDAT ─────
+    # Un MOMENTUM CANDIDAT avec v6_score_futures < 50 n'a pas assez de
+    # confirmation dérivés pour être exécutable.
+    if entry_type == "MOMENTUM" and flag == "CANDIDAT":
+        v6_fut_score = v6.get("v6_score_futures")
+        if v6_fut_score is not None and v6_fut_score < 50:
+            exception_fut = (
+                taker_pts >= 8 and
+                relative_vol >= 1.2 and
+                late_entry_risk < 40 and
+                oi_pts > -6
+            )
+            if not exception_fut:
+                forced_watchlist  = True
+                flag              = "WATCHLIST"
+                confidence        = min(confidence, 60)
+                max_leverage      = min(max_leverage, 3)
+                risk_guard_reason = "futures score insuffisant"
+                decision_explain  = f"WATCHLIST : futures score insuffisant ({v6_fut_score:.1f}<50), confirmation dérivés trop faible."
+                logger.info("V6.0.6g futures_score_min %s: score=%.1f", symbol, v6_fut_score)
+
+    # ── V6.0.6g — Règle 3 : OI fortement négatif non compensé ────────────────
+    # OI <= -12 signale un effondrement des positions — dangereux sans taker fort.
+    if entry_type == "MOMENTUM" and flag == "CANDIDAT" and oi_pts <= -12:
+        exception_oi = (
+            taker_pts >= 8 and
+            relative_vol >= 1.2
+        )
+        if not exception_oi:
+            forced_watchlist  = True
+            flag              = "WATCHLIST"
+            confidence        = min(confidence, 60)
+            max_leverage      = min(max_leverage, 3)
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "OI fortement négatif non compensé"
+            decision_explain  = decision_explain or "WATCHLIST : OI fortement négatif non compensé par un taker fort."
+            logger.info("V6.0.6g oi_negative %s: oi_pts=%d taker=%d", symbol, oi_pts, taker_pts)
+
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
         confidence   = min(confidence, 60)
@@ -2286,17 +2389,58 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 @app.route("/set_cooldown", methods=["POST"])
 def set_cooldown_endpoint():
     try:
-        data    = request.get_json(silent=True) or {}
-        symbols = data.get("symbols", [])
+        data      = request.get_json(silent=True) or {}
+        symbols   = data.get("symbols", [])
+        setup_ids = data.get("setup_ids", [])   # peut contenir des setup_id ou des dedup_key
+
         if not symbols or not isinstance(symbols, list):
             return jsonify({"error": "symbols must be a non-empty list"}), 400
+        if setup_ids is None:
+            setup_ids = []
+        if not isinstance(setup_ids, list):
+            return jsonify({"error": "setup_ids must be a list"}), 400
+
+        # Cooldown symbole classique.
         set_cooldown_symbols(symbols)
+
+        # Anti-doublon persistant : stocke les dedup_key/setup_id dans le même JSON,
+        # mais dans un bloc séparé des timestamps symboles.
+        if setup_ids:
+            with _COOLDOWN_LOCK:
+                cooldown = load_cooldown()
+                now = time.time()
+                existing = cooldown.get("setup_ids_ts", {})
+                if not isinstance(existing, dict):
+                    existing = {}
+
+                for sid in setup_ids:
+                    sid = str(sid or "").strip().upper()
+                    if sid:
+                        existing[sid] = now
+
+                # Purger les clés anti-doublon de plus de 4h.
+                existing = {
+                    k: v for k, v in existing.items()
+                    if isinstance(v, (int, float)) and now - v < COOLDOWN_SECONDS
+                }
+                cooldown["setup_ids"] = list(existing.keys())
+                cooldown["setup_ids_ts"] = existing
+                save_cooldown(cooldown)
+
         cooldown = load_cooldown()
+        now = time.time()
+        symbol_status = {
+            k: round((COOLDOWN_SECONDS - (now - v)) / 3600, 1)
+            for k, v in cooldown.items()
+            if k not in ("setup_ids", "setup_ids_ts") and isinstance(v, (int, float))
+        }
+
         return jsonify({
-            "status":   "ok",
-            "symbols":  symbols,
-            "cooldown": {k: round((COOLDOWN_SECONDS - (time.time() - v)) / 3600, 1)
-                         for k, v in cooldown.items()}
+            "status":    "ok",
+            "symbols":   [normalize_symbol(s) for s in symbols],
+            "setup_ids": [str(s).strip().upper() for s in setup_ids if str(s).strip()],
+            "cooldown":  symbol_status,
+            "setup_count": len(cooldown.get("setup_ids", [])) if isinstance(cooldown.get("setup_ids", []), list) else 0
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2307,14 +2451,31 @@ def set_cooldown_endpoint():
 def cooldown_status():
     try:
         cooldown = load_cooldown()
-        status   = {}
+        status = {}
+        now = time.time()
+
         for symbol, ts in cooldown.items():
-            remaining = max(0, COOLDOWN_SECONDS - (time.time() - ts))
+            if symbol in ("setup_ids", "setup_ids_ts"):
+                continue
+            if not isinstance(ts, (int, float)):
+                continue
+
+            remaining = max(0, COOLDOWN_SECONDS - (now - ts))
             status[symbol] = {
                 "remaining_hours": round(remaining / 3600, 1),
                 "expires_in_min":  round(remaining / 60)
             }
-        return jsonify({"active_cooldowns": status, "count": len(status)})
+
+        setup_ids = cooldown.get("setup_ids", [])
+        if not isinstance(setup_ids, list):
+            setup_ids = []
+
+        return jsonify({
+            "active_cooldowns": status,
+            "active_setup_ids": setup_ids,
+            "count": len(status),
+            "setup_count": len(setup_ids)
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2503,6 +2664,36 @@ def full_analysis():
         ]
         candidats = limit_weak_candidates(candidats)
 
+        # ── V6.0.6g — Anti-doublon dedup_key ─────────────────────────────────
+        # Double protection : verrou mémoire (intra-session, 60 min)
+        # + cooldown fichier (inter-session, via /set_cooldown Make).
+        # La clé est calculée ici, car setup_id n'existe qu'après build_signal_record.
+        cooldown_data = load_cooldown()
+        emitted_setup_ids = set(cooldown_data.get("setup_ids", []))
+        candidats_dedup = []
+        skipped_dedup = []
+
+        for r in candidats:
+            dedup_key = build_dedup_key(r)
+            if not dedup_key:
+                candidats_dedup.append(r)
+                continue
+
+            if dedup_key in emitted_setup_ids or is_setup_id_blocked(dedup_key):
+                skipped_dedup.append(dedup_key)
+                continue
+
+            r["dedup_key"] = dedup_key
+            candidats_dedup.append(r)
+
+        if skipped_dedup:
+            logger.info(
+                "V6.0.6g anti-doublon: %d signaux filtrés (dedup_key déjà émise): %s",
+                len(skipped_dedup),
+                skipped_dedup
+            )
+        candidats = candidats_dedup
+
         if candidats and candidats[0].get("trend_strength") == "weak":
             candidats = candidats[:1]
 
@@ -2623,6 +2814,13 @@ def full_analysis():
         # Make doit utiliser telegram_count pour décider d'envoyer sur Telegram
         # signals conservé pour Google Sheet / tracking complet
         telegram_signals = [s for s in signals if s.get("executable_signal")]
+
+        # Marquer les dedup_key des signaux exécutables comme émises (anti-doublon mémoire)
+        for s in telegram_signals:
+            dedup_key = str(s.get("dedup_key") or "").strip().upper()
+            if dedup_key:
+                mark_setup_id_emitted(dedup_key)
+                logger.info("V6.0.6g dedup_key marquée émise: %s", dedup_key)
 
         return jsonify({
             "text":             "\n".join(lines),
@@ -3043,7 +3241,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6f-risk-tightening",
+        "version": "6.0.6g-clean-dedup-ready",
         "providers": results
     })
 
@@ -3052,7 +3250,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6f-risk-tightening"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-clean-dedup-ready"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
