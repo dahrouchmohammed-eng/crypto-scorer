@@ -134,7 +134,7 @@ TAKER_BONUS_TABLE = [(0.65, 12), (0.58, 8), (0.53, 4)]   # pression acheteuse
 TAKER_MALUS_TABLE = [(0.35, -8), (0.42, -4), (0.47, -2)] # pression vendeuse
 
 # Couche 3 — Funding (bonus/malus doux, veto dur géré séparément)
-FUNDING_FAVORABLE_PTS   = 4      # funding neutre ou favorable → +4
+FUNDING_FAVORABLE_PTS   = 4      # funding réellement favorable → +4
 FUNDING_HOSTILE_PTS     = -10    # funding extrême dans mauvais sens → -10
 FUNDING_EXTREME_SOFT    = 0.0005 # seuil soft (0.05%) pour le malus doux
 FUNDING_NEUTRAL_BAND    = 0.0001 # ±0.01% = neutre
@@ -345,7 +345,6 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "volume_relatif":     r.get("volume_relatif"),
         "vol_penalty_note":   r.get("vol_penalty_note", ""),
         "late_entry_risk":    r.get("late_entry_risk"),
-        "taker_buy_ratio":    r.get("v6_futures_raw", {}).get("taker_buy_ratio"),
         "v6_score_futures":   r.get("v6_score_futures"),
         "tp_realism_note":    r.get("tp_realism_note", ""),
         "v6_futures_detail":  (
@@ -354,8 +353,7 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
             f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
             f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
         ) if r.get("v6_futures_detail") else "",
-        # ── Champs debug/calibration v6.0.7 ─────────────────────────────────
-        # Tous les champs bruts depuis v6_futures_raw (source unique fiable)
+        # ── Champs debug v6.0.6e/f ───────────────────────────────────────────
         "oi_change_pct":      r.get("v6_futures_raw", {}).get("oi_change_pct"),
         "taker_buy_ratio":    r.get("v6_futures_raw", {}).get("taker_buy_ratio"),
         "taker_sell_ratio":   r.get("v6_futures_raw", {}).get("taker_sell_ratio") or (
@@ -364,6 +362,15 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         ),
         "funding_signal":     r.get("funding_signal", ""),
         "derivatives_note":   r.get("derivatives_note", ""),
+        # ── Champs décision v6.0.6f ──────────────────────────────────────────
+        "executable_signal":  r.get("executable_signal", False),
+        "taker_score":        r.get("taker_score", 0),
+        "oi_score":           r.get("oi_score", 0),
+        "funding_score":      r.get("funding_score", 0),
+        "long_short_score":   r.get("long_short_score", 0),
+        "futures_support":    r.get("futures_support", 0),
+        "risk_guard_reason":  r.get("risk_guard_reason", "aucun"),
+        "decision_explain":   r.get("decision_explain", ""),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
@@ -772,31 +779,30 @@ def _tiered_pts(value, bonus_table, malus_table):
     return 0
 
 
-def compute_futures_score_v6(fd, direction):
-    """
-    Couche 3 : calcule le score futures brut (bonus/malus) puis le normalise 0..100.
-    fd : dict retourné par fetch_futures_data_v6 + "funding_rate" (déjà dans score_symbol).
-    direction : "LONG" ou "SHORT".
-    """
+def compute_futures_score_v6(fd, direction, volume_relatif=None):
+    """Couche 3 : score futures v6.0.6f — funding neutre=0, OI conditionnel."""
     raw = 0
     breakdown = {}
     is_long = (direction == "LONG")
-    momentum_1h = fd.get("momentum_1h", 0) or 0   # injecté depuis score_symbol
+    momentum_1h = fd.get("momentum_1h", 0) or 0
 
     # — Open Interest DIRECTIONNEL —
     # OI seul ne suffit pas : il faut que le prix confirme la direction
     # OI↑ + prix dans notre sens = soutenu → bonus (OI_BONUS_TABLE)
     # OI↑ + prix contre notre sens = divergence → malus doux (moitié du bonus)
-    # OI↓ = mouvement fragile → malus (OI_MALUS_TABLE)
+    # OI CONDITIONNEL v6.0.6f : bonus complet si taker>0 OU vol>=0.50
     oi_chg = fd.get("oi_change_pct")
     if oi_chg is not None:
         price_aligned = (is_long and momentum_1h >= 0) or (not is_long and momentum_1h <= 0)
+        taker_raw = fd.get("taker_buy_ratio")
+        taker_dir = taker_raw if is_long else (1 - taker_raw) if taker_raw is not None else None
+        taker_positive_oi = taker_dir is not None and taker_dir >= 0.53
+        vol_ok = (volume_relatif or 0) >= 0.50
         if oi_chg > 0:
             base_pts = _tiered_pts(oi_chg, OI_BONUS_TABLE, [])
             if price_aligned:
-                pts = base_pts
+                pts = base_pts if (taker_positive_oi or vol_ok) else min(base_pts, 2)
             else:
-                # OI monte mais prix contre notre direction = divergence, malus doux
                 pts = -max(2, int(abs(base_pts) / 2)) if base_pts > 0 else 0
         else:
             pts = _tiered_pts(oi_chg, [], OI_MALUS_TABLE)
@@ -811,16 +817,16 @@ def compute_futures_score_v6(fd, direction):
         raw += pts
         breakdown["taker"] = pts
 
-    # — Funding (signé selon direction) —
+    # FUNDING v6.0.6f : neutre = 0 pt (plus de faux +4 systematique)
     funding_rate = fd.get("funding_rate")
     if funding_rate is not None:
-        # signed > 0 signifie que le funding va CONTRE nous
         signed = funding_rate if is_long else -funding_rate
         pts = 0
         if abs(funding_rate) >= FUNDING_EXTREME_SOFT and signed > 0:
-            pts = FUNDING_HOSTILE_PTS    # extrême et contre nous
-        elif abs(funding_rate) <= FUNDING_NEUTRAL_BAND or signed < 0:
-            pts = FUNDING_FAVORABLE_PTS  # neutre ou favorable
+            pts = FUNDING_HOSTILE_PTS        # extrême et hostile
+        elif signed < -FUNDING_NEUTRAL_BAND:
+            pts = FUNDING_FAVORABLE_PTS      # réellement favorable
+        # funding neutre = 0 pt
         raw += pts
         breakdown["funding"] = pts
 
@@ -886,8 +892,9 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
     # Liquidations désactivées : champs conservés à None, sans appel réseau.
     fd = fetch_futures_data_v6(symbol)
     # Injecter funding_rate déjà récupéré dans score_symbol (évite un 5e appel)
-    fd["funding_rate"] = result_dict.get("funding_rate")
-    fd["momentum_1h"]  = result_dict.get("momentum_1h", 0)
+    fd["funding_rate"]   = result_dict.get("funding_rate")
+    fd["momentum_1h"]    = result_dict.get("momentum_1h", 0)
+    volume_relatif_v6    = result_dict.get("volume_relatif")
 
     # ── COUCHE 1 — VETO (TOUJOURS appliqué, même si futures data incomplète) ──
     # Les vetos RR / BTC danger / liquidité / funding hostile ne dépendent pas
@@ -928,7 +935,7 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
         }
 
     # ── COUCHE 3 — Score futures ──────────────────────────────────────────────
-    futures_norm, futures_raw, futures_breakdown = compute_futures_score_v6(fd, direction)
+    futures_norm, futures_raw, futures_breakdown = compute_futures_score_v6(fd, direction, volume_relatif=volume_relatif_v6)
 
     # Combinaison 70/30
     score_final = round(V6_WEIGHT_TECH * technical_score + V6_WEIGHT_FUTURES * futures_norm, 1)
@@ -1839,21 +1846,25 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     entry_avg = round((entry_low + entry_high) / 2, 8)
 
-    # Stop Loss
-    # Important : SL calculé depuis entry_avg pour garantir un R/R cohérent avec TP2.
-    # Avec TP2 = entry_avg ± 2×ATR, un SL à 1×ATR donne R/R ≈ 2.
+    # SL adaptatif v6.0.6f : plus d'espace pour les volatils
+    VOLATILE_SYMBOLS = {"HYPEUSDT","ZECUSDT","NEARUSDT","1000PEPEUSDT","WIFUSDT",
+                        "PEPEUSDT","MUUSDT","SNDKUSDT","LABUSDT"}
+    sl_atr_mult = 1.2 if symbol in MAJORS else 1.3
+    if atr_pct >= 2.5 or symbol in VOLATILE_SYMBOLS:
+        sl_atr_mult = max(sl_atr_mult, 1.5)
+
     if symbol in MEMECOINS:    sl_max_pct = 2.0
     elif symbol in MAJORS:     sl_max_pct = 4.0
     else:                      sl_max_pct = 3.0
 
     if direction == "LONG":
-        sl_raw = round(entry_avg - 1.0 * atr, 8)
+        sl_raw = round(entry_avg - sl_atr_mult * atr, 8)
         sl_distance = abs(current - sl_raw) / current * 100 if current > 0 else 0
         if sl_distance > sl_max_pct:
             sl_raw = round(current * (1 - sl_max_pct / 100), 8)
         stop_loss = sl_raw
     elif direction == "SHORT":
-        sl_raw = round(entry_avg + 1.0 * atr, 8)
+        sl_raw = round(entry_avg + sl_atr_mult * atr, 8)
         sl_distance = abs(sl_raw - current) / current * 100 if current > 0 else 0
         if sl_distance > sl_max_pct:
             sl_raw = round(current * (1 + sl_max_pct / 100), 8)
@@ -2043,7 +2054,8 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # un faux bonus "funding neutre" dans le score futures.
     _v6_input = {
         "funding_rate": funding_rate if funding_available else None,
-        "momentum_1h": momentum_1h
+        "momentum_1h":  momentum_1h,
+        "volume_relatif": relative_vol
     }
     # On injecte oi_change_pct une fois fetch fait dans apply_v6_layer
     # Le veto V6 utilise le RR CIBLE (TP4 = 5R), pas le RR opérationnel TP2 (~2R).
@@ -2080,51 +2092,109 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
             flag = "WATCHLIST"
 
-    # ── V6.0.6 — RÈGLE CONFIRMATION FUTURES (post-recombinaison V6) ───────────
-    # Objectif : séparer "signal technique seul" (→ WATCHLIST) de
-    # "signal technique + flux futures" (→ CANDIDAT).
-    #
-    # Règle : CANDIDAT + MOMENTUM + volume < 0.50 + futures_support < 2
-    #         → WATCHLIST (sauf exception taker fort)
-    #
-    # Exception : si taker >= +8, le flux est réel et suffisant → CANDIDAT maintenu.
-    # Pourquoi : le taker est l'indicateur court terme le plus fiable.
-    #   Ex: taker +8 avec sell ratio 60%+ sur un SHORT = confirmation claire.
-    #
-    # futures_support = nb d'indicateurs futures positifs parmi : OI, Taker, Funding, L/S
-    # Note : funding=+4 (neutre/favorable) compte comme positif mais est le moins fiable.
-    if entry_type == "MOMENTUM" and flag == "CANDIDAT":
-        futures_detail = v6.get("v6_futures_detail", {}) or {}
-        taker_pts      = futures_detail.get("taker", 0)
-        futures_support = sum([
-            futures_detail.get("oi",          0) > 0,
-            taker_pts                              > 0,
-            futures_detail.get("long_short",   0) > 0,
-            futures_detail.get("funding",      0) > 0,
-        ])
+    # ── V6.0.6f — REGLES DE GARDE POST-V6 ──────────────────────────────────────
+    # hard_reject=True → REJET immuable
+    # forced_watchlist=True → WATCHLIST si CANDIDAT, immuable
+    hard_reject      = False
+    forced_watchlist = False
+    risk_guard_reason = "aucun"
+    decision_explain  = ""
 
-        # Cas 1 : volume très faible (< 0.30) → WATCHLIST direct, pas d'exception
-        if relative_vol < 0.30:
-            flag       = "WATCHLIST"
-            confidence = min(confidence, 60)
-            max_leverage = min(max_leverage, 3)
-            logger.info("V6.0.6 WATCHLIST %s: volume très faible (%.2fx) — confirmation futures ignorée",
-                        symbol, relative_vol)
+    futures_detail  = v6.get("v6_futures_detail", {}) or {}
+    taker_pts       = futures_detail.get("taker", 0)
+    oi_pts          = futures_detail.get("oi", 0)
+    funding_pts     = futures_detail.get("funding", 0)
+    long_short_pts  = futures_detail.get("long_short", 0)
+    # funding ne compte dans futures_support QUE si reellement favorable (>0)
+    futures_support = sum([oi_pts > 0, taker_pts > 0, long_short_pts > 0, funding_pts > 0])
 
-        # Cas 2 : volume faible (0.30–0.50) + futures_support < 2
-        elif relative_vol < 0.50 and futures_support < 2:
-            # Exception : taker fort (≥ +8) = confirmation suffisante, CANDIDAT maintenu
-            if taker_pts >= 8:
-                logger.info("V6.0.6 CANDIDAT maintenu %s: taker fort (%+d pts) malgré volume faible (%.2fx)",
-                            symbol, taker_pts, relative_vol)
-            else:
-                flag       = "WATCHLIST"
-                confidence = min(confidence, 65)
-                max_leverage = min(max_leverage, 3)
-                logger.info("V6.0.6 WATCHLIST %s: volume faible (%.2fx) + futures_support %d/4 + taker faible (%+d pts)",
-                            symbol, relative_vol, futures_support, taker_pts)
+    # Regle 7 : taker obligatoire MOMENTUM CANDIDAT
+    if entry_type == "MOMENTUM" and flag == "CANDIDAT" and taker_pts <= 0:
+        exception_taker = (
+            relative_vol >= 1.2 and trend_strength == "strong" and late_entry_risk < 40
+            and ((direction == "LONG" and market_regime in ("bullish","neutral"))
+              or (direction == "SHORT" and market_regime in ("bearish","neutral")))
+        )
+        if not exception_taker:
+            forced_watchlist  = True
+            risk_guard_reason = "momentum sans taker positif"
+            decision_explain  = "WATCHLIST : momentum sans taker positif."
 
-    # Durée estimée calculée par Python
+    # Regle 8 : volume faible renforce MOMENTUM
+    if entry_type == "MOMENTUM" and not hard_reject:
+        if relative_vol < 0.15:
+            hard_reject       = True
+            risk_guard_reason = "volume critique"
+            decision_explain  = f"REJET : volume critique ({relative_vol:.2f}x)."
+        elif relative_vol < 0.30:
+            forced_watchlist  = True
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "volume tres faible"
+            decision_explain  = decision_explain or f"WATCHLIST : volume tres faible ({relative_vol:.2f}x)."
+        elif relative_vol < 0.50 and taker_pts < 8 and futures_support < 2:
+            forced_watchlist  = True
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "volume faible sans confirmation"
+            decision_explain  = decision_explain or f"WATCHLIST : volume faible ({relative_vol:.2f}x) + futures_support {futures_support}/4."
+
+    # Regle 9 : short trop bas dans le range
+    if direction == "SHORT" and not hard_reject:
+        exception_range = (market_regime == "bearish" and relative_vol >= 1.0
+                           and taker_pts >= 8 and late_entry_risk < 40)
+        if position_range < 0.18 and not exception_range:
+            hard_reject       = True
+            risk_guard_reason = "short trop proche du bas de range"
+            decision_explain  = f"REJET : short trop bas (position_range={position_range:.3f})."
+        elif 0.18 <= position_range < 0.25 and not exception_range:
+            forced_watchlist  = True
+            max_leverage      = min(max_leverage, 3)
+            confidence        = min(confidence, 60)
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "short proche du bas de range"
+            decision_explain  = decision_explain or f"WATCHLIST : short proche du bas de range ({position_range:.3f})."
+
+    # Regle 10 : anti-short BTC bullish
+    if direction == "SHORT" and market_regime == "bullish" and not hard_reject:
+        exception_bullish = (
+            global_score >= 75 and relative_vol >= 1.2 and taker_pts >= 8
+            and position_range >= 0.35 and late_entry_risk < 40
+        )
+        if not exception_bullish:
+            hard_reject       = True
+            risk_guard_reason = "short contre BTC bullish"
+            decision_explain  = "REJET : short contre regime BTC bullish."
+
+    # Application finale des gardes
+    if hard_reject:
+        flag = "REJET"
+        confidence   = min(confidence, 55)
+        max_leverage = min(max_leverage, 3)
+        logger.info("V6.0.6f hard_reject %s: %s", symbol, risk_guard_reason)
+    elif forced_watchlist and flag == "CANDIDAT":
+        flag = "WATCHLIST"
+        confidence   = min(confidence, 65)
+        max_leverage = min(max_leverage, 3)
+        logger.info("V6.0.6f forced_watchlist %s: %s", symbol, risk_guard_reason)
+
+    # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
+    if flag == "WATCHLIST":
+        confidence   = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+    elif flag == "SHORT_WATCH":
+        confidence   = min(confidence, 55)
+        max_leverage = min(max_leverage, 1)
+    elif flag == "REJET":
+        confidence   = min(confidence, 55)
+        max_leverage = min(max_leverage, 3)
+
+    executable_signal = (flag == "CANDIDAT")
+
+    if not decision_explain:
+        if flag == "CANDIDAT":
+            decision_explain = f"CANDIDAT : taker {taker_pts:+d}, futures_support {futures_support}/4, volume {relative_vol:.2f}x."
+        elif flag == "WATCHLIST":
+            decision_explain = "WATCHLIST : signal technique sans confirmation futures suffisante."
+        else:
+            decision_explain = "REJET : score ou regles de garde."
+
+    # Duree estimee calculee par Python
     if trend_strength == "strong":
         duration_label = "24 à 72h"
     elif trend_strength == "moderate":
@@ -2201,6 +2271,14 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "v6_futures_detail": v6["v6_futures_detail"],
         "v6_futures_raw":    v6.get("v6_futures_raw", {}),
         "v6_data_errors":    v6["v6_data_errors"],
+        "executable_signal":  executable_signal,
+        "taker_score":        taker_pts,
+        "oi_score":           oi_pts,
+        "funding_score":      funding_pts,
+        "long_short_score":   long_short_pts,
+        "futures_support":    futures_support,
+        "risk_guard_reason":  risk_guard_reason,
+        "decision_explain":   decision_explain,
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -2541,10 +2619,17 @@ def full_analysis():
             for r in candidats
         ]
 
+        # telegram_signals : uniquement les signaux exécutables (executable_signal=True)
+        # Make doit utiliser telegram_count pour décider d'envoyer sur Telegram
+        # signals conservé pour Google Sheet / tracking complet
+        telegram_signals = [s for s in signals if s.get("executable_signal")]
+
         return jsonify({
             "text":             "\n".join(lines),
             "count":            len(candidats),
+            "telegram_count":   len(telegram_signals),
             "signals":          signals,
+            "telegram_signals": telegram_signals,
             "market_regime":    market_regime,
             "market_danger":    market_details,
             "data_source":      data_source_run,
@@ -2958,7 +3043,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6e-debug-fields-fix",
+        "version": "6.0.6f-risk-tightening",
         "providers": results
     })
 
@@ -2967,7 +3052,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6e-debug-fields-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6f-risk-tightening"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
