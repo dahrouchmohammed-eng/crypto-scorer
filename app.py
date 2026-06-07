@@ -2735,6 +2735,11 @@ def full_analysis():
         candidats = cap_signal_count(candidats, market_regime, data_source_run)
 
         # ── top_watchlist / top_rejected — visibilité même sur SKIP ──────────
+        # P2.5 : les lignes WATCHLIST / REJECT doivent avoir la même structure
+        # que les vrais signaux, sinon Make ne peut pas alimenter proprement
+        # WATCHLIST_LOG / REJECT_LOG.
+        emitted_ts = int(time.time())
+
         _all_watchlist = sorted(
             [r for r in results if r.get("flag") == "WATCHLIST"],
             key=lambda x: x.get("score", 0), reverse=True
@@ -2744,30 +2749,26 @@ def full_analysis():
             key=lambda x: x.get("score", 0), reverse=True
         )
 
-        def _debug_row(r):
-            return {
-                "symbol":           r.get("symbol"),
-                "score":            r.get("score"),
-                "direction":        r.get("direction"),
-                "entry_type":       r.get("entry_type"),
-                "confidence":       r.get("confidence"),
-                "volume_relatif":   r.get("volume_relatif"),
-                "v6_score_futures": r.get("v6_score_futures"),
-                "futures_support":  r.get("futures_support"),
-                "taker_score":      r.get("taker_score"),
-                "oi_score":         r.get("oi_score"),
-                "funding_score":    r.get("funding_score"),
-                "long_short_score": r.get("long_short_score"),
-                "risk_guard_reason":r.get("risk_guard_reason"),
-                "decision_explain": r.get("decision_explain"),
-                "vol_penalty_note": r.get("vol_penalty_note"),
-                "late_entry_risk":  r.get("late_entry_risk"),
-                "position_range":   r.get("position_range"),
-                "market_regime":    r.get("market_regime"),
-            }
+        def _debug_row(r, signal_type):
+            """
+            Structure complète pour WATCHLIST_LOG / REJECT_LOG.
+            On réutilise build_signal_record() pour générer :
+            signal_id, setup_id, timestamp, entry/SL/TP, RR, deadlines, source, etc.
+            """
+            rec = build_signal_record(r, market_regime, data_source_run, emitted_ts)
+            rec["signal_type"] = signal_type
+            rec["outcome"] = "DIAGNOSTIC"
+            rec["evaluation_note"] = "Non envoyé Telegram — diagnostic uniquement"
+            return rec
 
-        top_watchlist = [_debug_row(r) for r in _all_watchlist[:5]]
-        top_rejected  = [_debug_row(r) for r in _all_rejected[:8]]
+        top_watchlist = [
+            _debug_row(r, "WATCHLIST")
+            for r in _all_watchlist[:5]
+        ]
+        top_rejected = [
+            _debug_row(r, "REJECT")
+            for r in _all_rejected[:8]
+        ]
 
         if not candidats:
             return jsonify({
@@ -2847,7 +2848,7 @@ def full_analysis():
                 f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
             )
 
-        emitted_ts = int(time.time())
+        # emitted_ts déjà calculé plus haut pour garder une même horloge run.
         for r in candidats:
             log_signal(r)
 
@@ -2879,6 +2880,7 @@ def full_analysis():
             "market_regime":    market_regime,
             "market_danger":    market_details,
             "data_source":      data_source_run,
+            "source_quality":   source_quality_run,
             "universe_size":    len(tickers_data),
             "analyzed_count":   len(top_candidates),
             "cooldown_skipped": cooldown_skipped
@@ -3289,7 +3291,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6g-decision-explain-fix",
+        "version": "6.0.6g-p25-complete",
         "providers": results
     })
 
@@ -3298,7 +3300,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-decision-explain-fix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-p25-complete"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
