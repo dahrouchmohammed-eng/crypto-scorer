@@ -2987,11 +2987,32 @@ def _evaluate_one(sig):
     timestamp_str  = _s("timestamp")
 
     # Convertir les deadlines en timestamps Unix
-    # Tolérant aux champs vides (WATCHLIST_LOG / REJECT_LOG n'ont pas toujours fill_deadline)
+    # Tolérant aux champs vides ET aux numéros de série Excel (ex: "46181,54965")
+    def _parse_ts(s, fallback):
+        if not s:
+            return fallback
+        # Numéro de série Excel (virgule ou point comme décimal)
+        s_norm = s.replace(",", ".")
+        try:
+            serial = float(s_norm)
+            if 40000 < serial < 60000:  # plage réaliste pour 2009-2064
+                # Excel epoch = 1899-12-30
+                import datetime as _dt
+                excel_epoch = _dt.datetime(1899, 12, 30, tzinfo=timezone.utc)
+                return int((excel_epoch + _dt.timedelta(days=serial)).timestamp())
+        except (ValueError, TypeError):
+            pass
+        # Format ISO normal
+        try:
+            return int(datetime.fromisoformat(s).timestamp())
+        except Exception:
+            return fallback
+
     try:
-        emit_ts    = int(datetime.fromisoformat(timestamp_str).timestamp()) if timestamp_str else int(time.time()) - 3600
-        fill_ts    = int(datetime.fromisoformat(fill_dl).timestamp())    if fill_dl    else emit_ts + 4 * 3600
-        resolve_ts = int(datetime.fromisoformat(resolve_dl).timestamp()) if resolve_dl else emit_ts + 72 * 3600
+        now_ts     = int(time.time())
+        emit_ts    = _parse_ts(timestamp_str, now_ts - 3600)
+        fill_ts    = _parse_ts(fill_dl,       emit_ts + 4 * 3600)
+        resolve_ts = _parse_ts(resolve_dl,    emit_ts + 72 * 3600)
     except Exception as e:
         return {"signal_id": signal_id, "outcome": "OPEN",
                 "evaluation_note": f"erreur parsing dates: {e}", "bars_checked": 0,
