@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.2")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1116,13 +1116,26 @@ def calculate_atr(highs, lows, closes, period=14):
     return round(np.mean(trs[-period:]), 6)
 
 def calculate_relative_volume(volumes, period=20):
+    """
+    Volume relatif : dernière bougie CLÔTURÉE / moyenne des `period` bougies précédentes.
+
+    v6.3 — Fix bougie incomplète :
+    La bougie H1 en cours n'est pas clôturée au moment du scan (run peut tomber
+    à n'importe quel moment dans l'heure). Son volume partiel est systématiquement
+    plus faible que les bougies closes → relative_vol artificellement très bas
+    (0.01x–0.07x observé en prod), ce qui déclenche des rejets en masse.
+
+    Fix : on utilise volumes[-2] (dernière bougie close) comme référence courante,
+    et volumes[-period-2:-2] pour la moyenne des `period` bougies closes précédentes.
+    Nécessite period + 2 bougies minimum.
+    """
     volumes = np.array(volumes, dtype=float)
-    if len(volumes) < period + 1:
+    if len(volumes) < period + 2:
         return 0
-    avg = np.mean(volumes[-period-1:-1])
+    avg = np.mean(volumes[-period-2:-2])
     if avg == 0:
         return 0
-    return round(volumes[-1] / avg, 2)
+    return round(volumes[-2] / avg, 2)
 
 def detect_market_regime(btc_klines, return_details=False):
     """
@@ -2317,12 +2330,39 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
                 f"futures_zone={futures_zone}, volume {relative_vol:.2f}x."
             )
 
-    # Regle 8 : volume faible renforce MOMENTUM
+    # Regle 8 : volume faible — v6.3 : volume critique n'est plus un hard_reject systématique.
+    # Logique :
+    #   vol < 0.15 → jamais CANDIDAT (non exécutable)
+    #   vol < 0.15 + contexte sain (futures healthy, BTC stable, RR valide) → WATCHLIST
+    #   vol < 0.15 + contexte faible (futures indispo/weak, danger HIGH, trend weak) → REJET
+    #   vol < 0.30 → forced WATCHLIST (inchangé)
+    #   vol < 0.50 + pas de confirmation → forced WATCHLIST (inchangé)
     if entry_type == "MOMENTUM" and not hard_reject:
         if relative_vol < 0.15:
-            hard_reject       = True
-            risk_guard_reason = "volume critique"
-            decision_explain  = f"REJET : volume critique ({relative_vol:.2f}x)."
+            # Évaluation du contexte pour décider WATCHLIST vs REJET
+            _vol_context_sain = (
+                futures_zone in ("healthy", "caution")
+                and market_danger_level != "HIGH"
+                and trend_strength != "weak"
+                and rr_valid
+                and late_entry_risk < 40
+            )
+            if _vol_context_sain:
+                forced_watchlist  = True
+                risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "volume critique"
+                decision_explain  = decision_explain or (
+                    f"WATCHLIST : volume critique ({relative_vol:.2f}x) mais contexte sain "
+                    f"(futures={futures_zone}, danger={market_danger_level}). Non exécutable."
+                )
+                logger.info("V6.3 volume critique WATCHLIST %s: %.2fx, zone=%s", symbol, relative_vol, futures_zone)
+            else:
+                hard_reject       = True
+                risk_guard_reason = "volume critique"
+                decision_explain  = (
+                    f"REJET : volume critique ({relative_vol:.2f}x) "
+                    f"+ contexte faible (futures={futures_zone}, danger={market_danger_level})."
+                )
+                logger.info("V6.3 volume critique REJET %s: %.2fx, zone=%s", symbol, relative_vol, futures_zone)
         elif relative_vol < 0.30:
             forced_watchlist  = True
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "volume tres faible"
@@ -2606,13 +2646,17 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
     # Ces raisons indiquent que le moteur a délibérément dégradé le signal.
     # Une zone futures saine ne suffit pas à contrebalancer ces raisons.
     _HARD_GUARD_REASONS = {
-        "volume critique",
-        "volume tres faible",
+        "volume critique",              # vol < 0.15 : jamais CANDIDAT, même si WATCHLIST autorisé
+        "volume tres faible",           # vol < 0.30 : trop faible pour promouvoir
         "short trop proche du bas de range",
         "short contre BTC bullish",
         "futures score insuffisant",
         "OI fortement négatif non compensé",
         "futures overheated + position range élevée",
+        # Note v6.3 : "volume critique" reste bloquant pour la PROMOTION même si
+        # la règle 8 autorise désormais WATCHLIST (contexte sain). La condition
+        # relative_vol >= V61_PROMOTE_MIN_VOLUME (0.50) bloque déjà en pratique,
+        # mais on garde cette ligne comme filet de sécurité logique explicite.
     }
     _promotion_hard_blocked = (
         isinstance(risk_guard_reason, str) and
@@ -3670,7 +3714,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.2-p26",
+        "version": "6.3-p26",
         "providers": results
     })
 
@@ -3679,7 +3723,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.2-p26"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
