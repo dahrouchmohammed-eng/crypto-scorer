@@ -167,6 +167,31 @@ LIQ_EXTREME_MALUS_PTS     = -6   # volatilité/cascade : on réduit un peu le sc
 FUTURES_RAW_MIN = -38.0
 FUTURES_RAW_MAX =  38.0
 
+# ─── CONFIG V6.0.7 — CALIBRATION LÉGÈRE ─────────────────────────────────────
+# Objectif : ne pas ouvrir tous les filtres, mais corriger les 2 biais détectés
+# par le forward backtest : taker trop bloquant et futures_score trop linéaire.
+TAKER_SOFT_PENALTY_PTS       = float(os.environ.get("TAKER_SOFT_PENALTY_PTS", "4"))
+TAKER_SOFT_CONF_CAP          = float(os.environ.get("TAKER_SOFT_CONF_CAP", "75"))
+TAKER_SOFT_LEVERAGE_CAP      = int(os.environ.get("TAKER_SOFT_LEVERAGE_CAP", "5"))
+
+FUTURES_HEALTHY_MIN          = float(os.environ.get("FUTURES_HEALTHY_MIN", "50"))
+FUTURES_HEALTHY_MAX          = float(os.environ.get("FUTURES_HEALTHY_MAX", "65"))
+FUTURES_CAUTION_MAX          = float(os.environ.get("FUTURES_CAUTION_MAX", "70"))
+FUTURES_OVERHEATED_THRESHOLD = float(os.environ.get("FUTURES_OVERHEATED_THRESHOLD", "70"))
+FUTURES_HEALTHY_BONUS_PTS    = float(os.environ.get("FUTURES_HEALTHY_BONUS_PTS", "2"))
+FUTURES_OVERHEATED_PENALTY   = float(os.environ.get("FUTURES_OVERHEATED_PENALTY", "6"))
+FUTURES_OVERHEATED_CONF_CAP  = float(os.environ.get("FUTURES_OVERHEATED_CONF_CAP", "72"))
+FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", "5"))
+FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
+
+# ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.2")
+V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
+V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
+V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
+V61_PROMOTE_LONG_MAX_POSITION = float(os.environ.get("V61_PROMOTE_LONG_MAX_POSITION", "0.75"))
+V61_PROMOTE_SHORT_MIN_POSITION = float(os.environ.get("V61_PROMOTE_SHORT_MIN_POSITION", "0.25"))
+
 # Paramètres API futures data
 OI_PERIOD   = "1h"   # granularité OI history
 OI_LOOKBACK = 6      # nb de points pour mesurer la variation d'OI
@@ -341,6 +366,17 @@ def log_signal(entry):
             "data_source": entry.get("data_source"),
             "source_quality": entry.get("source_quality"),
             "market_regime": entry.get("market_regime"),
+            "futures_zone": entry.get("futures_zone"),
+            "futures_overheated": entry.get("futures_overheated"),
+            "taker_not_confirmed": entry.get("taker_not_confirmed"),
+            "decision_version": entry.get("decision_version"),
+            "healthy_futures_zone": entry.get("healthy_futures_zone"),
+            "overheated_futures": entry.get("overheated_futures"),
+            "late_entry_risk_v6_1": entry.get("late_entry_risk_v6_1"),
+            "crowded_risk": entry.get("crowded_risk"),
+            "watchlist_promotion_candidate": entry.get("watchlist_promotion_candidate"),
+            "signal_downgrade_candidate": entry.get("signal_downgrade_candidate"),
+            "final_decision_reason": entry.get("final_decision_reason"),
         }
         with _SIGNAL_LOG_LOCK:
             with open(SIGNAL_LOG_FILE, "a") as f:
@@ -438,6 +474,23 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
         "futures_support":    r.get("futures_support", 0),
         "risk_guard_reason":  r.get("risk_guard_reason", "aucun"),
         "decision_explain":   r.get("decision_explain", ""),
+        # ── Champs calibration v6.0.7 ───────────────────────────────────────
+        "futures_zone":       r.get("futures_zone", "unavailable"),
+        "healthy_futures_confirmation": r.get("healthy_futures_confirmation", False),
+        "futures_overheated": r.get("futures_overheated", False),
+        "taker_not_confirmed": r.get("taker_not_confirmed", False),
+        "calibration_flags":  " | ".join(r.get("calibration_flags", [])) if isinstance(r.get("calibration_flags"), list) else r.get("calibration_flags", ""),
+        "confidence_cap_reason": r.get("confidence_cap_reason", ""),
+        "leverage_cap_reason": r.get("leverage_cap_reason", ""),
+        # ── Champs decision_engine v6.1 ─────────────────────────────────────
+        "decision_version": r.get("decision_version", DECISION_VERSION),
+        "healthy_futures_zone": r.get("healthy_futures_zone", False),
+        "overheated_futures": r.get("overheated_futures", False),
+        "late_entry_risk_v6_1": r.get("late_entry_risk_v6_1", False),
+        "crowded_risk": r.get("crowded_risk", False),
+        "watchlist_promotion_candidate": r.get("watchlist_promotion_candidate", False),
+        "signal_downgrade_candidate": r.get("signal_downgrade_candidate", False),
+        "final_decision_reason": r.get("final_decision_reason", r.get("decision_explain", "")),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
@@ -2063,6 +2116,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if data_source == "SPOT_FALLBACK": confidence = min(confidence, 72)
     if late_entry_risk >= 55:     confidence = min(confidence, 62)
     if market_danger_level == "HIGH": confidence = min(confidence, 60)
+
     confidence = round(max(40, min(88, confidence)), 1)
 
     # Rétrogradation tendance faible : un CANDIDAT en tendance faible ET à confiance
@@ -2159,6 +2213,20 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
             flag = "WATCHLIST"
 
+    # ── v6.2 — Point 1 : cap confidence MOMENTUM ≤ 70 ──────────────────────
+    # Donnée tracker v6.0.6 : conf >75% sur MOMENTUM = 25% WR (8 trades).
+    # Exception : futures zone healthy ET late_entry_risk < 30 — confirmation
+    # dérivés saine et timing non tardif justifient de laisser monter jusqu'à 75.
+    # IMPORTANT : ce bloc doit rester APRÈS apply_v6_layer(), car il dépend de v6_score_futures.
+    if entry_type == "MOMENTUM" and flag == "CANDIDAT":
+        _fut_score = v6.get("v6_score_futures")
+        _fut_healthy = _fut_score is not None and (50 <= _fut_score <= 65)
+        _not_late = late_entry_risk < 30
+        if _fut_healthy and _not_late:
+            confidence = min(confidence, 75)   # exception : futures saine + timing ok
+        else:
+            confidence = min(confidence, 70)   # règle générale MOMENTUM
+
     # ── V6.0.6f — REGLES DE GARDE POST-V6 ──────────────────────────────────────
     # hard_reject=True → REJET immuable
     # forced_watchlist=True → WATCHLIST si CANDIDAT, immuable
@@ -2175,17 +2243,79 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # funding ne compte dans futures_support QUE si reellement favorable (>0)
     futures_support = sum([oi_pts > 0, taker_pts > 0, long_short_pts > 0, funding_pts > 0])
 
-    # Regle 7 : taker obligatoire MOMENTUM CANDIDAT
+    # ── V6.0.7 — Lecture non linéaire du futures score + taker non bloquant ──
+    # Le backtest v6.0.6g montre :
+    # - taker_score <= 0 ne doit plus être un veto automatique sur MOMENTUM ;
+    # - v6_score_futures 50–65 = zone saine ;
+    # - v6_score_futures >= 70 = risque de surchauffe / crowded / entrée tardive.
+    v6_fut_score = v6.get("v6_score_futures")
+    futures_zone = "unavailable"
+    healthy_futures_confirmation = False
+    futures_overheated = False
+    taker_not_confirmed = False
+    calibration_flags = []
+    confidence_cap_reason = ""
+    leverage_cap_reason = ""
+
+    if v6_fut_score is not None:
+        if v6_fut_score < FUTURES_HEALTHY_MIN:
+            futures_zone = "weak"
+        elif FUTURES_HEALTHY_MIN <= v6_fut_score <= FUTURES_HEALTHY_MAX:
+            futures_zone = "healthy"
+            healthy_futures_confirmation = True
+            calibration_flags.append("healthy_futures_confirmation")
+            if flag == "CANDIDAT" and not hard_reject:
+                global_score = round(min(100, global_score + FUTURES_HEALTHY_BONUS_PTS), 1)
+        elif v6_fut_score < FUTURES_CAUTION_MAX:
+            futures_zone = "caution"
+            calibration_flags.append("futures_caution_zone")
+        else:
+            futures_zone = "overheated"
+            futures_overheated = True
+            calibration_flags.append("futures_overheated")
+            if flag == "CANDIDAT" and not hard_reject:
+                global_score = round(max(0, global_score - FUTURES_OVERHEATED_PENALTY), 1)
+                confidence = min(confidence, FUTURES_OVERHEATED_CONF_CAP)
+                max_leverage = min(max_leverage, FUTURES_OVERHEATED_LEV_CAP)
+                confidence_cap_reason = "futures_overheated"
+                leverage_cap_reason = "futures_overheated"
+
+            if entry_type == "MOMENTUM" and position_range >= FUTURES_LATE_POSITION_RANGE:
+                forced_watchlist = True
+                risk_guard_reason = "futures overheated + position range élevée"
+                decision_explain = (
+                    f"WATCHLIST : futures score surchauffé ({v6_fut_score:.1f}) "
+                    f"+ position_range élevée ({position_range:.3f}), risque d'entrée tardive."
+                )
+
+    # Regle 7 v6.0.7 : taker non confirmé = pénalité douce, plus de WATCHLIST automatique.
     if entry_type == "MOMENTUM" and flag == "CANDIDAT" and taker_pts <= 0:
-        exception_taker = (
-            relative_vol >= 1.2 and trend_strength == "strong" and late_entry_risk < 40
-            and ((direction == "LONG" and market_regime in ("bullish","neutral"))
-              or (direction == "SHORT" and market_regime in ("bearish","neutral")))
-        )
-        if not exception_taker:
+        taker_not_confirmed = True
+        calibration_flags.append("taker_not_confirmed")
+        global_score = round(max(0, global_score - TAKER_SOFT_PENALTY_PTS), 1)
+        confidence = min(confidence, TAKER_SOFT_CONF_CAP)
+        max_leverage = min(max_leverage, TAKER_SOFT_LEVERAGE_CAP)
+        confidence_cap_reason = confidence_cap_reason or "taker_not_confirmed"
+        leverage_cap_reason = leverage_cap_reason or "taker_not_confirmed"
+
+        # On ne force WATCHLIST que si le setup cumule d'autres faiblesses concrètes.
+        if (
+            relative_vol < 0.50
+            or (v6_fut_score is not None and v6_fut_score < FUTURES_HEALTHY_MIN)
+            or market_danger_level == "HIGH"
+            or trend_strength == "weak"
+        ):
             forced_watchlist  = True
-            risk_guard_reason = "momentum sans taker positif"
-            decision_explain  = "WATCHLIST : momentum sans taker positif."
+            risk_guard_reason = "taker non confirme + faiblesse contextuelle"
+            decision_explain  = (
+                f"WATCHLIST : taker non confirmé ({taker_pts:+d}) "
+                f"avec volume {relative_vol:.2f}x / futures_zone={futures_zone}."
+            )
+        else:
+            decision_explain = (
+                f"CANDIDAT : taker non confirmé ({taker_pts:+d}) traité en pénalité douce, "
+                f"futures_zone={futures_zone}, volume {relative_vol:.2f}x."
+            )
 
     # Regle 8 : volume faible renforce MOMENTUM
     if entry_type == "MOMENTUM" and not hard_reject:
@@ -2228,6 +2358,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             risk_guard_reason = "short contre BTC bullish"
             decision_explain  = "REJET : short contre regime BTC bullish."
 
+    # Après les ajustements v6.0.7, on réévalue le flag si le score calibré
+    # repasse sous les seuils. Cela évite un CANDIDAT dont le score a été abaissé
+    # par taker_not_confirmed ou futures_overheated.
+    if flag == "CANDIDAT" and not hard_reject and global_score < 58:
+        if global_score >= 52:
+            forced_watchlist = True
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score calibré sous seuil candidat"
+            decision_explain = decision_explain or f"WATCHLIST : score calibré sous seuil candidat ({global_score:.1f}<58)."
+        else:
+            hard_reject = True
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score calibré insuffisant"
+            decision_explain = decision_explain or f"REJET : score calibré insuffisant ({global_score:.1f}<52)."
+
     # Application finale des gardes
     if hard_reject:
         flag = "REJET"
@@ -2243,23 +2386,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # ── V6.0.6g — Règle 1 : futures score minimum pour MOMENTUM CANDIDAT ─────
     # Un MOMENTUM CANDIDAT avec v6_score_futures < 50 n'a pas assez de
     # confirmation dérivés pour être exécutable.
+    # v6.2 : exception supprimée — taker_pts>=8 n'est jamais atteint dans le tracker
+    # (taker=4 est la valeur quasi-systématique), ce qui rendait l'exception inopérante
+    # tout en laissant passer des signaux à 29% WR (7 trades avec fut<50 en v6.0.6).
     if entry_type == "MOMENTUM" and flag == "CANDIDAT":
         v6_fut_score = v6.get("v6_score_futures")
         if v6_fut_score is not None and v6_fut_score < 50:
-            exception_fut = (
-                taker_pts >= 8 and
-                relative_vol >= 1.2 and
-                late_entry_risk < 40 and
-                oi_pts > -6
-            )
-            if not exception_fut:
-                forced_watchlist  = True
-                flag              = "WATCHLIST"
-                confidence        = min(confidence, 60)
-                max_leverage      = min(max_leverage, 3)
-                risk_guard_reason = "futures score insuffisant"
-                decision_explain  = f"WATCHLIST : futures score insuffisant ({v6_fut_score:.1f}<50), confirmation dérivés trop faible."
-                logger.info("V6.0.6g futures_score_min %s: score=%.1f", symbol, v6_fut_score)
+            forced_watchlist  = True
+            flag              = "WATCHLIST"
+            confidence        = min(confidence, 60)
+            max_leverage      = min(max_leverage, 3)
+            risk_guard_reason = "futures score insuffisant"
+            decision_explain  = f"WATCHLIST : futures score insuffisant ({v6_fut_score:.1f}<50), confirmation dérivés trop faible."
+            logger.info("V6.2 futures_score_min (no exception) %s: score=%.1f", symbol, v6_fut_score)
 
     # ── V6.0.6g — Règle 3 : OI fortement négatif non compensé ────────────────
     # OI <= -12 signale un effondrement des positions — dangereux sans taker fort.
@@ -2276,6 +2415,38 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "OI fortement négatif non compensé"
             decision_explain  = decision_explain or "WATCHLIST : OI fortement négatif non compensé par un taker fort."
             logger.info("V6.0.6g oi_negative %s: oi_pts=%d taker=%d", symbol, oi_pts, taker_pts)
+
+    # ── V6.1 — Decision engine centralisé : promotion / downgrade auditable ──
+    v61_decision = decision_engine_v6_1(
+        symbol=symbol,
+        flag=flag,
+        direction=direction,
+        entry_type=entry_type,
+        global_score=global_score,
+        confidence=confidence,
+        max_leverage=max_leverage,
+        futures_zone=futures_zone,
+        futures_overheated=futures_overheated,
+        taker_not_confirmed=taker_not_confirmed,
+        taker_pts=taker_pts,
+        funding_signal=funding_signal,
+        long_short_pts=long_short_pts,
+        futures_support=futures_support,
+        relative_vol=relative_vol,
+        late_entry_risk=late_entry_risk,
+        late_entry_level=late_entry_level,
+        position_range=position_range,
+        market_danger_level=market_danger_level,
+        market_regime=market_regime,
+        rr_valid=rr_valid,
+        data_source=data_source,
+        decision_explain=decision_explain,
+        risk_guard_reason=risk_guard_reason,   # v6.2 : pour bloquer la promotion si garde forte
+    )
+    flag = v61_decision["flag"]
+    confidence = v61_decision["confidence"]
+    max_leverage = v61_decision["max_leverage"]
+    decision_explain = v61_decision["decision_explain"]
 
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
@@ -2390,6 +2561,164 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "futures_support":    futures_support,
         "risk_guard_reason":  risk_guard_reason,
         "decision_explain":   decision_explain,
+        # ── Champs calibration v6.0.7 ───────────────────────────────────────
+        "futures_zone":       futures_zone,
+        "healthy_futures_confirmation": healthy_futures_confirmation,
+        "futures_overheated": futures_overheated,
+        "taker_not_confirmed": taker_not_confirmed,
+        "calibration_flags":  calibration_flags,
+        # ── Champs decision_engine v6.1 ─────────────────────────────────────
+        "decision_version": v61_decision.get("decision_version", DECISION_VERSION),
+        "healthy_futures_zone": v61_decision.get("healthy_futures_zone", False),
+        "overheated_futures": v61_decision.get("overheated_futures", False),
+        "late_entry_risk_v6_1": v61_decision.get("late_entry_risk_v6_1", False),
+        "crowded_risk": v61_decision.get("crowded_risk", False),
+        "watchlist_promotion_candidate": v61_decision.get("watchlist_promotion_candidate", False),
+        "signal_downgrade_candidate": v61_decision.get("signal_downgrade_candidate", False),
+        "final_decision_reason": v61_decision.get("final_decision_reason", decision_explain),
+        "confidence_cap_reason": confidence_cap_reason,
+        "leverage_cap_reason": leverage_cap_reason,
+    }
+
+
+def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, confidence, max_leverage,
+                         futures_zone, futures_overheated, taker_not_confirmed, taker_pts,
+                         funding_signal, long_short_pts, futures_support, relative_vol,
+                         late_entry_risk, late_entry_level, position_range, market_danger_level,
+                         market_regime, rr_valid, data_source, decision_explain,
+                         risk_guard_reason="aucun"):
+    """
+    Decision engine v6.1 : sépare la décision finale du score brut.
+
+    Objectif :
+    - promouvoir les WATCHLIST saines qui ressemblent aux meilleurs cas du tracker ;
+    - dégrader les CANDIDAT trop tardifs / surchauffés / crowded ;
+    - exposer des flags auditables dans Signals et WATCHLIST_LOG.
+
+    Ne modifie pas les niveaux d'entrée, SL, TP, RR. Les caps confiance/levier
+    restent gérés par les règles existantes après cette fonction.
+
+    v6.2 — risk_guard_reason : si une règle de garde a explicitement forcé WATCHLIST
+    (volume critique, short trop bas, anti-short BTC bullish, futures score insuffisant…),
+    la promotion est bloquée — on ne peut pas annuler une décision explicite du moteur.
+    """
+    # ── v6.2 — Raisons bloquantes pour la promotion ──────────────────────────
+    # Ces raisons indiquent que le moteur a délibérément dégradé le signal.
+    # Une zone futures saine ne suffit pas à contrebalancer ces raisons.
+    _HARD_GUARD_REASONS = {
+        "volume critique",
+        "volume tres faible",
+        "short trop proche du bas de range",
+        "short contre BTC bullish",
+        "futures score insuffisant",
+        "OI fortement négatif non compensé",
+        "futures overheated + position range élevée",
+    }
+    _promotion_hard_blocked = (
+        isinstance(risk_guard_reason, str) and
+        any(r in risk_guard_reason for r in _HARD_GUARD_REASONS)
+    )
+
+    original_flag = flag
+    reasons = []
+
+    healthy_futures_zone = (futures_zone == "healthy")
+    overheated_futures = bool(futures_overheated or futures_zone == "overheated")
+
+    late_entry_risk_v6_1 = bool(
+        (late_entry_risk is not None and late_entry_risk >= V61_LATE_ENTRY_RISK_MIN)
+        or late_entry_level == "HIGH"
+        or (
+            entry_type == "MOMENTUM"
+            and overheated_futures
+            and position_range is not None
+            and position_range >= FUTURES_LATE_POSITION_RANGE
+        )
+    )
+
+    crowded_funding = (
+        (direction == "LONG" and funding_signal == "longs crowded") or
+        (direction == "SHORT" and funding_signal == "shorts crowded")
+    )
+    crowded_risk = bool(overheated_futures or crowded_funding or long_short_pts < 0)
+
+    watchlist_promotion_candidate = bool(
+        flag == "WATCHLIST"
+        and direction in ("LONG", "SHORT")
+        and rr_valid
+        and healthy_futures_zone
+        and not late_entry_risk_v6_1
+        and not crowded_risk
+        and not _promotion_hard_blocked        # v6.2 : ne pas annuler une garde explicite
+        and market_danger_level != "HIGH"
+        and data_source != "SPOT_FALLBACK"
+        and relative_vol is not None
+        and relative_vol >= V61_PROMOTE_MIN_VOLUME
+        and (
+            (direction == "LONG" and position_range <= V61_PROMOTE_LONG_MAX_POSITION) or
+            (direction == "SHORT" and position_range >= V61_PROMOTE_SHORT_MIN_POSITION)
+        )
+    )
+
+    signal_downgrade_candidate = bool(
+        flag == "CANDIDAT"
+        and (
+            overheated_futures
+            or late_entry_risk_v6_1
+            or crowded_risk
+            or (
+                entry_type == "MOMENTUM"
+                and taker_not_confirmed
+                and (relative_vol < 0.50 or futures_support < 2)
+            )
+        )
+    )
+
+    if watchlist_promotion_candidate:
+        flag = "CANDIDAT"
+        reasons.append("PROMOTION WATCHLIST : zone futures saine, volume suffisant, timing non tardif, risque crowded non détecté")
+
+    elif signal_downgrade_candidate:
+        flag = "WATCHLIST"
+        confidence = min(confidence, 65)
+        max_leverage = min(max_leverage, 3)
+        if overheated_futures:
+            reasons.append("DOWNGRADE : futures surchauffés")
+        if late_entry_risk_v6_1:
+            reasons.append("DOWNGRADE : risque entrée tardive")
+        if crowded_risk:
+            reasons.append("DOWNGRADE : risque crowded")
+        if taker_not_confirmed and relative_vol < 0.50:
+            reasons.append("DOWNGRADE : taker non confirmé avec volume faible")
+
+    if not reasons:
+        if decision_explain:
+            final_decision_reason = decision_explain
+        elif flag == "CANDIDAT":
+            final_decision_reason = "CANDIDAT v6.1 : conditions décisionnelles acceptées."
+        elif flag == "WATCHLIST":
+            final_decision_reason = "WATCHLIST v6.1 : suivi sans exécution automatique."
+        else:
+            final_decision_reason = "REJET v6.1 : règles de garde ou score insuffisant."
+    else:
+        final_decision_reason = " | ".join(reasons)
+
+    if flag != original_flag:
+        decision_explain = final_decision_reason
+
+    return {
+        "flag": flag,
+        "confidence": confidence,
+        "max_leverage": max_leverage,
+        "decision_explain": decision_explain,
+        "decision_version": DECISION_VERSION,
+        "healthy_futures_zone": healthy_futures_zone,
+        "overheated_futures": overheated_futures,
+        "late_entry_risk_v6_1": late_entry_risk_v6_1,
+        "crowded_risk": crowded_risk,
+        "watchlist_promotion_candidate": watchlist_promotion_candidate,
+        "signal_downgrade_candidate": signal_downgrade_candidate,
+        "final_decision_reason": final_decision_reason,
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -2676,6 +3005,15 @@ def full_analysis():
         # Double protection : verrou mémoire (intra-session, 60 min)
         # + cooldown fichier (inter-session, via /set_cooldown Make).
         # La clé est calculée ici, car setup_id n'existe qu'après build_signal_record.
+        #
+        # v6.2 — FIX bug ADAUSDT : 3 signaux identiques émis en 33 secondes.
+        # Cause : mark_setup_id_emitted() n'était appelé que dans /set_cooldown
+        # (APRÈS l'envoi Telegram), donc le verrou mémoire était vide pendant
+        # tout le run courant. Un second run déclenchant dans la même minute
+        # (Make retry ou double-trigger) pouvait émettre le même signal.
+        # Fix : on appelle mark_setup_id_emitted(dedup_key) ici, AVANT d'ajouter
+        # le signal à candidats_dedup, pour que tout run parallèle ou immédiatement
+        # suivant soit bloqué dès le filtre is_setup_id_blocked().
         cooldown_data = load_cooldown()
         emitted_setup_ids = set(cooldown_data.get("setup_ids", []))
         candidats_dedup = []
@@ -2690,6 +3028,10 @@ def full_analysis():
             if dedup_key in emitted_setup_ids or is_setup_id_blocked(dedup_key):
                 skipped_dedup.append(dedup_key)
                 continue
+
+            # v6.2 FIX : marquer immédiatement en mémoire pour bloquer tout
+            # run concurrent ou immédiatement suivant — sans attendre /set_cooldown.
+            mark_setup_id_emitted(dedup_key)
 
             r["dedup_key"] = dedup_key
             candidats_dedup.append(r)
@@ -2837,6 +3179,19 @@ def full_analysis():
                 f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
                 f"duration_label: {r['duration_label']} | "
                 f"v6_score_futures: {r.get('v6_score_futures')} | "
+                f"futures_zone: {r.get('futures_zone')} | "
+                f"futures_overheated: {r.get('futures_overheated')} | "
+                f"healthy_futures_confirmation: {r.get('healthy_futures_confirmation')} | "
+                f"taker_not_confirmed: {r.get('taker_not_confirmed')} | "
+                f"calibration_flags: {','.join(r.get('calibration_flags', [])) if isinstance(r.get('calibration_flags'), list) else r.get('calibration_flags', '')} | "
+                f"decision_version: {r.get('decision_version')} | "
+                f"healthy_futures_zone: {r.get('healthy_futures_zone')} | "
+                f"overheated_futures: {r.get('overheated_futures')} | "
+                f"late_entry_risk_v6_1: {r.get('late_entry_risk_v6_1')} | "
+                f"crowded_risk: {r.get('crowded_risk')} | "
+                f"watchlist_promotion_candidate: {r.get('watchlist_promotion_candidate')} | "
+                f"signal_downgrade_candidate: {r.get('signal_downgrade_candidate')} | "
+                f"final_decision_reason: {r.get('final_decision_reason')} | "
                 f"taker_buy_ratio: {r.get('v6_futures_raw',{}).get('taker_buy_ratio')} | "
                 f"taker_sell_ratio: {r.get('v6_futures_raw',{}).get('taker_sell_ratio')} | "
                 f"long_liq_usdt: {r.get('v6_futures_raw',{}).get('long_liq_usdt')} | "
@@ -3315,7 +3670,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6g-p26-v6-data-errors",
+        "version": "6.2-p26",
         "providers": results
     })
 
@@ -3324,7 +3679,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-p26-v6-data-errors"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.2-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
