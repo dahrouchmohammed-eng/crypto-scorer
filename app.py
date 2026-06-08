@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.1")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -2401,8 +2401,19 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # Après les ajustements v6.0.7, on réévalue le flag si le score calibré
     # repasse sous les seuils. Cela évite un CANDIDAT dont le score a été abaissé
     # par taker_not_confirmed ou futures_overheated.
+    #
+    # v6.3.1 — Priorité forced_watchlist :
+    # Si une règle de garde a déjà décidé WATCHLIST (volume faible / volume critique
+    # en contexte sain / futures score insuffisant), le score <52 ne doit pas
+    # réécrire la décision en REJET. Sinon on obtient flag=REJET mais
+    # final_decision_reason=WATCHLIST dans les logs, et on perd les cas utiles
+    # pour calibration WATCHLIST_LOG. Les vrais hard_reject explicites restent
+    # prioritaires plus haut (short contre BTC bullish, volume critique contexte faible, etc.).
     if flag == "CANDIDAT" and not hard_reject and global_score < 58:
-        if global_score >= 52:
+        if forced_watchlist:
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "watchlist forcée par garde"
+            decision_explain = decision_explain or f"WATCHLIST : garde active malgré score calibré bas ({global_score:.1f}<58)."
+        elif global_score >= 52:
             forced_watchlist = True
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score calibré sous seuil candidat"
             decision_explain = decision_explain or f"WATCHLIST : score calibré sous seuil candidat ({global_score:.1f}<58)."
@@ -3714,7 +3725,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3-p26",
+        "version": "6.3.1-p26",
         "providers": results
     })
 
@@ -3723,7 +3734,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3-p26"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.1-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
