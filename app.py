@@ -419,6 +419,7 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts):
             f"funding={r.get('v6_futures_detail',{}).get('funding',0):+d} "
             f"ls={r.get('v6_futures_detail',{}).get('long_short',0):+d}"
         ) if r.get("v6_futures_detail") else "",
+        "v6_data_errors":     " | ".join(r.get("v6_data_errors", [])) if isinstance(r.get("v6_data_errors"), list) else r.get("v6_data_errors", ""),
         # ── Champs debug v6.0.6e/f ───────────────────────────────────────────
         "oi_change_pct":      r.get("v6_futures_raw", {}).get("oi_change_pct"),
         "taker_buy_ratio":    r.get("v6_futures_raw", {}).get("taker_buy_ratio"),
@@ -3293,7 +3294,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.0.6g-p25-complete-fixed",
+        "version": "6.0.6g-p26-v6-data-errors",
         "providers": results
     })
 
@@ -3302,7 +3303,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-p25-complete-fixed"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.0.6g-p26-v6-data-errors"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
