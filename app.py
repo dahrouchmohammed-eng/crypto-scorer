@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.5-evalfix")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.6-evaltimefix")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3326,11 +3326,13 @@ def full_analysis():
 #   1. Fill dans la zone d'entrée avant fill_deadline.
 #   2. Après fill, TP1 ou SL touché en premier avant resolve_deadline.
 #
-# v6.3.5 — FIX évaluation 72h :
+# v6.3.6 — FIX évaluation 72h + fill_time :
 # - pagination klines 5m jusqu'à min(now, resolve_deadline), au lieu d'une seule
 #   page limitée à ~16h/24h ;
 # - prise en compte de filled_at déjà présent pour les lignes OPEN ;
-# - si filled_at existe, on ne recherche plus le fill, on vérifie directement SL/TP.
+# - si filled_at existe, on ne recherche plus le fill, on vérifie directement SL/TP ;
+# - fill_time_minutes négatif est neutralisé (champ vide + note timezone), pour
+#   éviter de polluer les statistiques avec des durées impossibles.
 
 EVAL_KLINE_INTERVAL = "5m"
 EVAL_KLINE_SECONDS  = 5 * 60
@@ -3378,6 +3380,30 @@ def _parse_eval_ts(value, fallback=None):
         return int(dt.timestamp())
     except Exception:
         return fallback
+
+
+def _safe_fill_time_minutes(filled_at_ts, emit_ts):
+    """
+    Calcule fill_time_minutes sans polluer la Sheet avec des valeurs négatives.
+
+    Les valeurs négatives viennent d'un décalage timezone / Google Sheet :
+    l'outcome WIN/LOSS peut être correct, mais le timestamp d'émission peut être
+    interprété après filled_at. Dans ce cas, on renvoie une valeur vide et une
+    note de prudence au lieu d'écrire -417, -371, etc.
+    """
+    try:
+        if filled_at_ts is None or emit_ts is None:
+            return "", ""
+        delta_min = round((int(filled_at_ts) - int(emit_ts)) / 60, 1)
+        if delta_min < -1:
+            return "", " | fill_time non fiable — timezone"
+        if delta_min < 0:
+            return 0, ""
+        return delta_min, ""
+    except Exception:
+        return "", " | fill_time non fiable — erreur calcul"
+
+
 
 
 def _fetch_klines_page(symbol, start_ts, limit):
@@ -3533,7 +3559,7 @@ def _evaluate_one(sig):
     if existing_filled_ts:
         filled_at_ts = existing_filled_ts
         filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
-        fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
+        fill_time_min, fill_time_note = _safe_fill_time_minutes(filled_at_ts, emit_ts)
         post_fill = [bar for bar in klines if int(bar["ts"]) > filled_at_ts]
     else:
         filled_at_ts = None
@@ -3571,7 +3597,7 @@ def _evaluate_one(sig):
             }
 
         filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
-        fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
+        fill_time_min, fill_time_note = _safe_fill_time_minutes(filled_at_ts, emit_ts)
         post_fill = klines[fill_bar_idx + 1:]
 
     # ── Phase 2 : SL / TP1 après fill ───────────────────────────────────────
@@ -3598,7 +3624,7 @@ def _evaluate_one(sig):
                 "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                 "exit_price": exit_p,
                 "bars_checked": bars_checked,
-                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}",
+                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}{fill_time_note}",
                 "fill_time_minutes": fill_time_min
             }
 
@@ -3610,7 +3636,7 @@ def _evaluate_one(sig):
                 "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                 "exit_price": tp1,
                 "bars_checked": bars_checked,
-                "evaluation_note": f"TP1 touché. fill={fill_price}",
+                "evaluation_note": f"TP1 touché. fill={fill_price}{fill_time_note}",
                 "fill_time_minutes": fill_time_min
             }
 
@@ -3622,7 +3648,7 @@ def _evaluate_one(sig):
                 "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
                 "exit_price": stop_loss,
                 "bars_checked": bars_checked,
-                "evaluation_note": f"SL touché. fill={fill_price}",
+                "evaluation_note": f"SL touché. fill={fill_price}{fill_time_note}",
                 "fill_time_minutes": fill_time_min
             }
 
@@ -3636,7 +3662,7 @@ def _evaluate_one(sig):
             "closed_at": "",
             "exit_price": "",
             "bars_checked": bars_checked,
-            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}",
+            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}{fill_time_note}",
             "fill_time_minutes": fill_time_min
         }
 
@@ -3647,7 +3673,7 @@ def _evaluate_one(sig):
         "closed_at": "",
         "exit_price": "",
         "bars_checked": bars_checked,
-        "evaluation_note": f"rempli à {fill_price}, attente SL/TP",
+        "evaluation_note": f"rempli à {fill_price}, attente SL/TP{fill_time_note}",
         "fill_time_minutes": fill_time_min
     }
 
@@ -3799,7 +3825,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.5-evalfix",
+        "version": "6.3.6-evaltimefix",
         "providers": results
     })
 
@@ -3808,7 +3834,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.5-evalfix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.6-evaltimefix"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
