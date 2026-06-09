@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.3")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.4")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1923,6 +1923,17 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     global_score = round(max(0, global_score), 1)
 
+    # ── Variables de garde — initialisées AVANT le bloc FLAG ────────────────
+    # v6.3.4 FIX : P4-U (ci-dessous) lit risk_guard_reason et écrit forced_watchlist.
+    # L'init était 300 lignes plus bas → UnboundLocalError sur tout CANDIDAT
+    # trend=weak (crash silencieux par symbole), puis réinit écrasant P4-U.
+    # hard_reject=True → REJET immuable
+    # forced_watchlist=True → WATCHLIST, immuable
+    hard_reject      = False
+    forced_watchlist = False
+    risk_guard_reason = "aucun"
+    decision_explain  = ""
+
     # ── FLAG ─────────────────────────────────────────────────────────────────
     if global_score >= 58:
         flag = "CANDIDAT"
@@ -2251,12 +2262,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             confidence = min(confidence, 70)   # règle générale MOMENTUM
 
     # ── V6.0.6f — REGLES DE GARDE POST-V6 ──────────────────────────────────────
-    # hard_reject=True → REJET immuable
-    # forced_watchlist=True → WATCHLIST si CANDIDAT, immuable
-    hard_reject      = False
-    forced_watchlist = False
-    risk_guard_reason = "aucun"
-    decision_explain  = ""
+    # v6.3.4 : les variables de garde (hard_reject, forced_watchlist,
+    # risk_guard_reason, decision_explain) sont désormais initialisées AVANT
+    # le bloc FLAG — ne pas les réinitialiser ici, P4-U a pu déjà les modifier.
 
     futures_detail  = v6.get("v6_futures_detail", {}) or {}
     taker_pts       = futures_detail.get("taker", 0)
@@ -2505,11 +2513,22 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         data_source=data_source,
         decision_explain=decision_explain,
         risk_guard_reason=risk_guard_reason,   # v6.2 : pour bloquer la promotion si garde forte
+        trend_strength=trend_strength,         # v6.3.4 : pour la golden zone (LONG: trend != weak)
     )
     flag = v61_decision["flag"]
     confidence = v61_decision["confidence"]
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
+
+    # ── v6.3.4 — Flags d'observation dans calibration_flags (visibles Sheets) ──
+    if v61_decision.get("golden_zone_promotion"):
+        calibration_flags.append("golden_zone_promotion")
+    if v61_decision.get("volume_explosif"):
+        calibration_flags.append("volume_explosif")
+    if v61_decision.get("late_entry_review"):
+        calibration_flags.append("late_entry_review")
+    if v61_decision.get("short_scalp_eligible"):
+        calibration_flags.append("short_scalp_eligible")
 
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
@@ -2649,7 +2668,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
                          funding_signal, long_short_pts, futures_support, relative_vol,
                          late_entry_risk, late_entry_level, position_range, market_danger_level,
                          market_regime, rr_valid, data_source, decision_explain,
-                         risk_guard_reason="aucun"):
+                         risk_guard_reason="aucun", trend_strength="moderate"):
     """
     Decision engine v6.1 : sépare la décision finale du score brut.
 
@@ -2671,6 +2690,9 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
     _HARD_GUARD_REASONS = {
         "volume critique",              # vol < 0.15 : jamais CANDIDAT, même si WATCHLIST autorisé
         "volume tres faible",           # vol < 0.30 : trop faible pour promouvoir
+        "trend faible",                 # v6.3.4 : P4-U prioritaire — SHORT weak bearish reste
+                                        # loggué (short_scalp_eligible) sans promotion golden,
+                                        # conformément à la décision 20+ setups avant activation
         "short trop proche du bas de range",
         "short contre BTC bullish",
         "futures score insuffisant",
@@ -2727,12 +2749,63 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         )
     )
 
+    # ── v6.3.4 — GOLDEN ZONE : promotion sélective WATCHLIST→CANDIDAT ──────
+    # Calibrée sur 173 setups uniques (dédupliqués par setup_id) :
+    #   vol 0.3–0.8 + PR < 0.7 → 79% WR (34/43 setups uniques, toutes versions)
+    #   v6.3.3 seul : 10/10. Zone GPT (0.5–1.0 + PR≤0.75) rejetée : 63% seulement.
+    # La promotion naïve v6.1 (watchlist_promotion_candidate) reste SUSPENDUE.
+    golden_zone_promotion = bool(
+        flag == "WATCHLIST"
+        and direction in ("LONG", "SHORT")
+        and rr_valid
+        and not _promotion_hard_blocked
+        and market_danger_level != "HIGH"
+        and data_source == "FUTURES"
+        and late_entry_risk < 30
+        and relative_vol is not None
+        and 0.3 <= relative_vol < 0.8
+        and position_range is not None
+        and position_range < 0.7
+        and futures_zone in ("healthy", "caution")   # ≈ v6_score_futures >= 50, hors overheated
+        and (
+            (direction == "LONG"
+             and market_regime in ("bullish", "neutral")
+             and trend_strength != "weak")
+            or
+            (direction == "SHORT"
+             and market_regime in ("bearish", "neutral"))
+        )
+    )
+
+    # v6.3.4 — Anti-FOMO : volume explosif jamais CANDIDAT sur MOMENTUM.
+    # Setups uniques : vol >= 1.5 → 17% WR (2/12). Le gros volume capture
+    # des mouvements déjà consommés.
+    volume_explosif = bool(
+        entry_type == "MOMENTUM"
+        and relative_vol is not None
+        and relative_vol >= 1.5
+    )
+
+    # v6.3.4 — Flags d'observation (loggués, non exécutés) :
+    # late_entry_review : score >= 70 + MOMENTUM = souvent mouvement déjà avancé
+    #   (tracker : score 65+ → 0–24% WR). Suspicion, pas validation.
+    # short_scalp_eligible : SHORT + weak + bearish = 6/6 WIN — échantillon trop
+    #   petit pour exécuter. Activation si 20+ setups résolus à WR solide.
+    late_entry_review = bool(global_score >= 70 and entry_type == "MOMENTUM")
+    short_scalp_eligible = bool(
+        direction == "SHORT"
+        and trend_strength == "weak"
+        and market_regime == "bearish"
+        and flag in ("WATCHLIST", "REJET")
+    )
+
     signal_downgrade_candidate = bool(
         flag == "CANDIDAT"
         and (
             overheated_futures
             or late_entry_risk_v6_1
             or crowded_risk
+            or volume_explosif                       # v6.3.4 anti-FOMO
             or (
                 entry_type == "MOMENTUM"
                 and taker_not_confirmed
@@ -2741,15 +2814,22 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         )
     )
 
-    # ── v6.3.3 — P4-V : promotion WATCHLIST→CANDIDAT suspendue ─────────────
-    # Données tracker v6.3.2 : WR watchlist promues = 34% (22W/43L).
-    # La promotion basée sur vol≥0.50 + futures healthy capturait des setups
-    # déjà en fin de mouvement (volume fort corrèle avec LOSS dans les données).
-    # watchlist_promotion_candidate reste calculé et loggué pour calibration future,
-    # mais ne produit plus de promotion vers CANDIDAT.
-    # Réactivation quand WR watchlist promues ≥ 60% sur ≥ 20 trades résolus.
-    if watchlist_promotion_candidate:
-        logger.info("V6.3.3 P4-V promotion SUSPENDUE %s (loggué uniquement)", symbol)
+    # ── v6.3.4 — Application des décisions ─────────────────────────────────
+    # 1. Golden zone : seule promotion autorisée (très sélective).
+    # 2. P4-V : la promotion naïve v6.1 reste suspendue (loggué uniquement).
+    if golden_zone_promotion:
+        flag = "CANDIDAT"
+        # v6.3.4 FIX : un signal WATCHLIST arrive ici déjà capé (conf≤60, levier≤3)
+        # par les plafonds antérieurs. Sans floor, la promotion garderait ces caps
+        # et le CANDIDAT promu sortirait à 60%/3x au lieu de la cible 62-68%/4x.
+        confidence   = min(max(confidence, 62), 68)
+        max_leverage = min(max(max_leverage, 4), 4)
+        reasons.append("PROMOTION GOLDEN ZONE : vol 0.3-0.8, PR<0.7, futures>=50, timing sain")
+        logger.info("V6.3.4 golden_zone_promotion %s: vol=%.2f PR=%.3f zone=%s",
+                    symbol, relative_vol, position_range, futures_zone)
+
+    elif watchlist_promotion_candidate:
+        logger.info("V6.3.3 P4-V promotion naïve SUSPENDUE %s (loggué uniquement)", symbol)
         # flag reste WATCHLIST
 
     elif signal_downgrade_candidate:
@@ -2762,6 +2842,8 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
             reasons.append("DOWNGRADE : risque entrée tardive")
         if crowded_risk:
             reasons.append("DOWNGRADE : risque crowded")
+        if volume_explosif:
+            reasons.append("DOWNGRADE : volume explosif (>=1.5x), entrée probablement tardive")
         if taker_not_confirmed and relative_vol < 0.50:
             reasons.append("DOWNGRADE : taker non confirmé avec volume faible")
 
@@ -2793,6 +2875,10 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         "watchlist_promotion_candidate": watchlist_promotion_candidate,
         "signal_downgrade_candidate": signal_downgrade_candidate,
         "final_decision_reason": final_decision_reason,
+        "golden_zone_promotion": golden_zone_promotion,      # v6.3.4
+        "volume_explosif": volume_explosif,                  # v6.3.4
+        "late_entry_review": late_entry_review,              # v6.3.4 — loggué, non exécuté
+        "short_scalp_eligible": short_scalp_eligible,        # v6.3.4 — loggué, non exécuté
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -3744,7 +3830,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.3-p26",
+        "version": "6.3.4-p26",
         "providers": results
     })
 
@@ -3753,7 +3839,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.3-p26"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.4-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
