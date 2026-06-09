@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.4")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.3")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1923,17 +1923,6 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     global_score = round(max(0, global_score), 1)
 
-    # ── Variables de garde — initialisées AVANT le bloc FLAG ────────────────
-    # v6.3.4 FIX : P4-U (ci-dessous) lit risk_guard_reason et écrit forced_watchlist.
-    # L'init était 300 lignes plus bas → UnboundLocalError sur tout CANDIDAT
-    # trend=weak (crash silencieux par symbole), puis réinit écrasant P4-U.
-    # hard_reject=True → REJET immuable
-    # forced_watchlist=True → WATCHLIST, immuable
-    hard_reject      = False
-    forced_watchlist = False
-    risk_guard_reason = "aucun"
-    decision_explain  = ""
-
     # ── FLAG ─────────────────────────────────────────────────────────────────
     if global_score >= 58:
         flag = "CANDIDAT"
@@ -2262,9 +2251,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             confidence = min(confidence, 70)   # règle générale MOMENTUM
 
     # ── V6.0.6f — REGLES DE GARDE POST-V6 ──────────────────────────────────────
-    # v6.3.4 : les variables de garde (hard_reject, forced_watchlist,
-    # risk_guard_reason, decision_explain) sont désormais initialisées AVANT
-    # le bloc FLAG — ne pas les réinitialiser ici, P4-U a pu déjà les modifier.
+    # hard_reject=True → REJET immuable
+    # forced_watchlist=True → WATCHLIST si CANDIDAT, immuable
+    hard_reject      = False
+    forced_watchlist = False
+    risk_guard_reason = "aucun"
+    decision_explain  = ""
 
     futures_detail  = v6.get("v6_futures_detail", {}) or {}
     taker_pts       = futures_detail.get("taker", 0)
@@ -2513,22 +2505,11 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         data_source=data_source,
         decision_explain=decision_explain,
         risk_guard_reason=risk_guard_reason,   # v6.2 : pour bloquer la promotion si garde forte
-        trend_strength=trend_strength,         # v6.3.4 : pour la golden zone (LONG: trend != weak)
     )
     flag = v61_decision["flag"]
     confidence = v61_decision["confidence"]
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
-
-    # ── v6.3.4 — Flags d'observation dans calibration_flags (visibles Sheets) ──
-    if v61_decision.get("golden_zone_promotion"):
-        calibration_flags.append("golden_zone_promotion")
-    if v61_decision.get("volume_explosif"):
-        calibration_flags.append("volume_explosif")
-    if v61_decision.get("late_entry_review"):
-        calibration_flags.append("late_entry_review")
-    if v61_decision.get("short_scalp_eligible"):
-        calibration_flags.append("short_scalp_eligible")
 
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
@@ -2668,7 +2649,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
                          funding_signal, long_short_pts, futures_support, relative_vol,
                          late_entry_risk, late_entry_level, position_range, market_danger_level,
                          market_regime, rr_valid, data_source, decision_explain,
-                         risk_guard_reason="aucun", trend_strength="moderate"):
+                         risk_guard_reason="aucun"):
     """
     Decision engine v6.1 : sépare la décision finale du score brut.
 
@@ -2690,9 +2671,6 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
     _HARD_GUARD_REASONS = {
         "volume critique",              # vol < 0.15 : jamais CANDIDAT, même si WATCHLIST autorisé
         "volume tres faible",           # vol < 0.30 : trop faible pour promouvoir
-        "trend faible",                 # v6.3.4 : P4-U prioritaire — SHORT weak bearish reste
-                                        # loggué (short_scalp_eligible) sans promotion golden,
-                                        # conformément à la décision 20+ setups avant activation
         "short trop proche du bas de range",
         "short contre BTC bullish",
         "futures score insuffisant",
@@ -2749,63 +2727,12 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         )
     )
 
-    # ── v6.3.4 — GOLDEN ZONE : promotion sélective WATCHLIST→CANDIDAT ──────
-    # Calibrée sur 173 setups uniques (dédupliqués par setup_id) :
-    #   vol 0.3–0.8 + PR < 0.7 → 79% WR (34/43 setups uniques, toutes versions)
-    #   v6.3.3 seul : 10/10. Zone GPT (0.5–1.0 + PR≤0.75) rejetée : 63% seulement.
-    # La promotion naïve v6.1 (watchlist_promotion_candidate) reste SUSPENDUE.
-    golden_zone_promotion = bool(
-        flag == "WATCHLIST"
-        and direction in ("LONG", "SHORT")
-        and rr_valid
-        and not _promotion_hard_blocked
-        and market_danger_level != "HIGH"
-        and data_source == "FUTURES"
-        and late_entry_risk < 30
-        and relative_vol is not None
-        and 0.3 <= relative_vol < 0.8
-        and position_range is not None
-        and position_range < 0.7
-        and futures_zone in ("healthy", "caution")   # ≈ v6_score_futures >= 50, hors overheated
-        and (
-            (direction == "LONG"
-             and market_regime in ("bullish", "neutral")
-             and trend_strength != "weak")
-            or
-            (direction == "SHORT"
-             and market_regime in ("bearish", "neutral"))
-        )
-    )
-
-    # v6.3.4 — Anti-FOMO : volume explosif jamais CANDIDAT sur MOMENTUM.
-    # Setups uniques : vol >= 1.5 → 17% WR (2/12). Le gros volume capture
-    # des mouvements déjà consommés.
-    volume_explosif = bool(
-        entry_type == "MOMENTUM"
-        and relative_vol is not None
-        and relative_vol >= 1.5
-    )
-
-    # v6.3.4 — Flags d'observation (loggués, non exécutés) :
-    # late_entry_review : score >= 70 + MOMENTUM = souvent mouvement déjà avancé
-    #   (tracker : score 65+ → 0–24% WR). Suspicion, pas validation.
-    # short_scalp_eligible : SHORT + weak + bearish = 6/6 WIN — échantillon trop
-    #   petit pour exécuter. Activation si 20+ setups résolus à WR solide.
-    late_entry_review = bool(global_score >= 70 and entry_type == "MOMENTUM")
-    short_scalp_eligible = bool(
-        direction == "SHORT"
-        and trend_strength == "weak"
-        and market_regime == "bearish"
-        and flag in ("WATCHLIST", "REJET")
-    )
-
     signal_downgrade_candidate = bool(
         flag == "CANDIDAT"
         and (
             overheated_futures
             or late_entry_risk_v6_1
             or crowded_risk
-            or volume_explosif                       # v6.3.4 anti-FOMO
             or (
                 entry_type == "MOMENTUM"
                 and taker_not_confirmed
@@ -2814,22 +2741,15 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         )
     )
 
-    # ── v6.3.4 — Application des décisions ─────────────────────────────────
-    # 1. Golden zone : seule promotion autorisée (très sélective).
-    # 2. P4-V : la promotion naïve v6.1 reste suspendue (loggué uniquement).
-    if golden_zone_promotion:
-        flag = "CANDIDAT"
-        # v6.3.4 FIX : un signal WATCHLIST arrive ici déjà capé (conf≤60, levier≤3)
-        # par les plafonds antérieurs. Sans floor, la promotion garderait ces caps
-        # et le CANDIDAT promu sortirait à 60%/3x au lieu de la cible 62-68%/4x.
-        confidence   = min(max(confidence, 62), 68)
-        max_leverage = min(max(max_leverage, 4), 4)
-        reasons.append("PROMOTION GOLDEN ZONE : vol 0.3-0.8, PR<0.7, futures>=50, timing sain")
-        logger.info("V6.3.4 golden_zone_promotion %s: vol=%.2f PR=%.3f zone=%s",
-                    symbol, relative_vol, position_range, futures_zone)
-
-    elif watchlist_promotion_candidate:
-        logger.info("V6.3.3 P4-V promotion naïve SUSPENDUE %s (loggué uniquement)", symbol)
+    # ── v6.3.3 — P4-V : promotion WATCHLIST→CANDIDAT suspendue ─────────────
+    # Données tracker v6.3.2 : WR watchlist promues = 34% (22W/43L).
+    # La promotion basée sur vol≥0.50 + futures healthy capturait des setups
+    # déjà en fin de mouvement (volume fort corrèle avec LOSS dans les données).
+    # watchlist_promotion_candidate reste calculé et loggué pour calibration future,
+    # mais ne produit plus de promotion vers CANDIDAT.
+    # Réactivation quand WR watchlist promues ≥ 60% sur ≥ 20 trades résolus.
+    if watchlist_promotion_candidate:
+        logger.info("V6.3.3 P4-V promotion SUSPENDUE %s (loggué uniquement)", symbol)
         # flag reste WATCHLIST
 
     elif signal_downgrade_candidate:
@@ -2842,8 +2762,6 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
             reasons.append("DOWNGRADE : risque entrée tardive")
         if crowded_risk:
             reasons.append("DOWNGRADE : risque crowded")
-        if volume_explosif:
-            reasons.append("DOWNGRADE : volume explosif (>=1.5x), entrée probablement tardive")
         if taker_not_confirmed and relative_vol < 0.50:
             reasons.append("DOWNGRADE : taker non confirmé avec volume faible")
 
@@ -2875,10 +2793,6 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         "watchlist_promotion_candidate": watchlist_promotion_candidate,
         "signal_downgrade_candidate": signal_downgrade_candidate,
         "final_decision_reason": final_decision_reason,
-        "golden_zone_promotion": golden_zone_promotion,      # v6.3.4
-        "volume_explosif": volume_explosif,                  # v6.3.4
-        "late_entry_review": late_entry_review,              # v6.3.4 — loggué, non exécuté
-        "short_scalp_eligible": short_scalp_eligible,        # v6.3.4 — loggué, non exécuté
     }
 
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
@@ -3407,301 +3321,349 @@ def full_analysis():
 
 
 # ─── EVALUATE SIGNALS ─────────────────────────────────────────────────────────
-# Appelé par Make toutes les 2h avec les lignes OPEN de la Google Sheet.
-# Rejoue les klines 5min depuis l'émission pour détecter :
-#   1. Si le prix a touché la zone d'entrée dans la fenêtre de fill (4h).
-#   2. Si, après fill, TP1 ou SL a été touché en premier (fenêtre 72h).
-# Renvoie un tableau "results" que Make itère pour mettre à jour la Sheet.
+# Appelé par Google Apps Script avec les lignes DIAGNOSTIC + OPEN de WATCHLIST_LOG.
+# Rejoue les klines 5min pour détecter :
+#   1. Fill dans la zone d'entrée avant fill_deadline.
+#   2. Après fill, TP1 ou SL touché en premier avant resolve_deadline.
 #
-# Cycle de vie de outcome :
-#   OPEN → NO_FILL  (fill_deadline dépassée, entrée jamais touchée)
-#   OPEN → WIN      (TP1 touché avant SL)
-#   OPEN → LOSS     (SL touché avant TP1)
-#   OPEN → EXPIRED  (resolve_deadline dépassée, rempli mais ni SL ni TP)
-#   OPEN → OPEN     (encore en cours, rien à mettre à jour)
+# v6.3.5 — FIX évaluation 72h :
+# - pagination klines 5m jusqu'à min(now, resolve_deadline), au lieu d'une seule
+#   page limitée à ~16h/24h ;
+# - prise en compte de filled_at déjà présent pour les lignes OPEN ;
+# - si filled_at existe, on ne recherche plus le fill, on vérifie directement SL/TP.
 
-EVAL_KLINE_INTERVAL = "5m"   # granularité pour limiter le biais intra-barre
-EVAL_KLINE_LIMIT    = 290    # ~24h de klines 5min (Binance max 1500, Bybit max 200)
+EVAL_KLINE_INTERVAL = "5m"
+EVAL_KLINE_SECONDS  = 5 * 60
+EVAL_KLINE_PAGE_LIMIT = int(os.environ.get("EVAL_KLINE_PAGE_LIMIT", "1000"))
+EVAL_MAX_PAGES = int(os.environ.get("EVAL_MAX_PAGES", "12"))  # 12*1000*5m > 72h Binance ; Bybit capé à 200/page
 
 
-def _get_klines_since(symbol, since_ts, limit=EVAL_KLINE_LIMIT):
+def _parse_eval_ts(value, fallback=None):
+    """Parse ISO, timestamp Unix ou serial Excel/Google Sheets en timestamp Unix UTC."""
+    if value is None or value == "":
+        return fallback
+
+    if isinstance(value, (int, float)):
+        # timestamp Unix probable
+        if value > 1_000_000_000:
+            return int(value)
+        # serial Excel / Google Sheets
+        if 40000 < value < 70000:
+            import datetime as _dt
+            excel_epoch = _dt.datetime(1899, 12, 30, tzinfo=timezone.utc)
+            return int((excel_epoch + _dt.timedelta(days=float(value))).timestamp())
+        return fallback
+
+    s = str(value).strip()
+    if not s:
+        return fallback
+
+    # Serial Excel sous forme texte, avec virgule ou point.
+    s_num = s.replace(",", ".")
+    try:
+        serial = float(s_num)
+        if 40000 < serial < 70000:
+            import datetime as _dt
+            excel_epoch = _dt.datetime(1899, 12, 30, tzinfo=timezone.utc)
+            return int((excel_epoch + _dt.timedelta(days=serial)).timestamp())
+    except Exception:
+        pass
+
+    # ISO : tolérant Z, espace au lieu de T, naïf traité UTC.
+    try:
+        iso = s.replace(" ", "T").replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return fallback
+
+
+def _fetch_klines_page(symbol, start_ts, limit):
     """
-    Récupère jusqu'à `limit` klines 5min depuis since_ts.
-    Essaie Binance Futures, puis Bybit, puis Binance Vision Spot.
-    Retourne une liste de dicts {ts, open, high, low, close} triés croissant.
+    Récupère une page de klines 5m depuis start_ts.
+    Ordre fournisseurs : Binance Futures -> Bybit Linear -> Binance Vision Spot.
+    Retour : liste de dicts triés croissant.
     """
-    results = []
+    page_limit = max(1, min(int(limit), 1500))
 
-    # Binance Futures (startTime en ms)
+    # Binance Futures
     if BINANCE_ENABLED:
         url = (f"https://fapi.binance.com/fapi/v1/klines"
                f"?symbol={symbol}&interval={EVAL_KLINE_INTERVAL}"
-               f"&startTime={since_ts*1000}&limit={limit}")
+               f"&startTime={int(start_ts)*1000}&limit={page_limit}")
         raw = fetch_binance(url)
         if raw:
-            return [{"ts": int(k[0])//1000, "open": float(k[1]),
-                     "high": float(k[2]), "low": float(k[3]),
-                     "close": float(k[4])} for k in raw]
+            return sorted([
+                {"ts": int(k[0]) // 1000, "open": float(k[1]),
+                 "high": float(k[2]), "low": float(k[3]), "close": float(k[4])}
+                for k in raw
+            ], key=lambda x: x["ts"])
 
-    # Bybit Linear (startTime en ms)
+    # Bybit Linear : cap 200/page côté API.
     try:
-        start_ms = since_ts * 1000
+        bybit_limit = min(page_limit, 200)
         url = (f"https://api.bybit.com/v5/market/kline"
                f"?category=linear&symbol={symbol}&interval=5"
-               f"&start={start_ms}&limit={min(limit, 200)}")
+               f"&start={int(start_ts)*1000}&limit={bybit_limit}")
         raw = fetch_binance(url)
         if raw and raw.get("result", {}).get("list"):
-            lst = raw["result"]["list"]
             return sorted([
-                {"ts": int(k[0])//1000, "open": float(k[1]),
-                 "high": float(k[2]), "low": float(k[3]),
-                 "close": float(k[4])}
-                for k in lst
+                {"ts": int(k[0]) // 1000, "open": float(k[1]),
+                 "high": float(k[2]), "low": float(k[3]), "close": float(k[4])}
+                for k in raw["result"]["list"]
             ], key=lambda x: x["ts"])
     except Exception as e:
-        logger.warning("eval klines bybit %s: %s", symbol, e)
+        logger.warning("eval klines bybit page %s: %s", symbol, e)
 
-    # Binance Vision Spot (fallback)
+    # Binance Vision Spot fallback.
     url = (f"https://data-api.binance.vision/api/v3/klines"
            f"?symbol={symbol}&interval={EVAL_KLINE_INTERVAL}"
-           f"&startTime={since_ts*1000}&limit={limit}")
+           f"&startTime={int(start_ts)*1000}&limit={page_limit}")
     raw = fetch_binance(url)
     if raw:
-        return [{"ts": int(k[0])//1000, "open": float(k[1]),
-                 "high": float(k[2]), "low": float(k[3]),
-                 "close": float(k[4])} for k in raw]
+        return sorted([
+            {"ts": int(k[0]) // 1000, "open": float(k[1]),
+             "high": float(k[2]), "low": float(k[3]), "close": float(k[4])}
+            for k in raw
+        ], key=lambda x: x["ts"])
 
     return []
 
 
+def _get_klines_window(symbol, start_ts, end_ts):
+    """
+    Paginer les klines 5m de start_ts jusqu'à end_ts inclus.
+    Déduplique par timestamp et protège contre les boucles de provider.
+    """
+    start_ts = int(start_ts)
+    end_ts = int(end_ts)
+    if end_ts < start_ts:
+        end_ts = start_ts
+
+    out_by_ts = {}
+    cursor = start_ts
+    pages = 0
+
+    while cursor <= end_ts + EVAL_KLINE_SECONDS and pages < EVAL_MAX_PAGES:
+        pages += 1
+        page = _fetch_klines_page(symbol, cursor, EVAL_KLINE_PAGE_LIMIT)
+        if not page:
+            break
+
+        last_ts = None
+        for bar in page:
+            ts = int(bar["ts"])
+            last_ts = ts if last_ts is None else max(last_ts, ts)
+            if start_ts <= ts <= end_ts:
+                out_by_ts[ts] = bar
+
+        if last_ts is None or last_ts <= cursor:
+            break
+        if last_ts >= end_ts:
+            break
+
+        cursor = last_ts + EVAL_KLINE_SECONDS
+
+    return [out_by_ts[k] for k in sorted(out_by_ts.keys())]
+
+
 def _evaluate_one(sig):
     """
-    Évalue un signal OPEN unique.
-    Retourne un dict avec signal_id + tous les champs de mise à jour.
+    Évalue un signal DIAGNOSTIC ou OPEN unique.
+    Retourne un dict avec signal_id + champs de mise à jour.
     """
-    signal_id      = sig.get("signal_id", "")
-    symbol         = sig.get("symbol", "")
-    direction      = sig.get("direction", "LONG")
+    signal_id = str(sig.get("signal_id", "") or "").strip()
+    symbol = normalize_symbol(sig.get("symbol", ""))
+    direction = str(sig.get("direction", "LONG") or "LONG").strip().upper()
 
-    # Make envoie tous les champs comme strings — on normalise proprement.
     def _f(key, default=0.0):
         v = sig.get(key, default)
-        try: return float(v)
-        except (TypeError, ValueError): return default
+        try:
+            return float(str(v).replace(",", "."))
+        except (TypeError, ValueError):
+            return default
 
     def _s(key, default=""):
         v = sig.get(key, default)
         return str(v).strip() if v is not None else default
 
-    entry_low      = _f("entry_low")
-    entry_high     = _f("entry_high")
-    stop_loss      = _f("stop_loss")
-    tp1            = _f("tp1")
-    fill_dl        = _s("fill_deadline")
-    resolve_dl     = _s("resolve_deadline")
-    timestamp_str  = _s("timestamp")
+    entry_low = _f("entry_low")
+    entry_high = _f("entry_high")
+    stop_loss = _f("stop_loss")
+    tp1 = _f("tp1")
 
-    # Convertir les deadlines en timestamps Unix
-    # Tolérant aux champs vides ET aux numéros de série Excel (ex: "46181,54965")
-    def _parse_ts(s, fallback):
-        if not s:
-            return fallback
-        # Numéro de série Excel (virgule ou point comme décimal)
-        s_norm = s.replace(",", ".")
-        try:
-            serial = float(s_norm)
-            if 40000 < serial < 60000:  # plage réaliste pour 2009-2064
-                # Excel epoch = 1899-12-30
-                import datetime as _dt
-                excel_epoch = _dt.datetime(1899, 12, 30, tzinfo=timezone.utc)
-                return int((excel_epoch + _dt.timedelta(days=serial)).timestamp())
-        except (ValueError, TypeError):
-            pass
-        # Format ISO normal
-        try:
-            return int(datetime.fromisoformat(s).timestamp())
-        except Exception:
-            return fallback
+    now_ts = int(time.time())
+    timestamp_str = _s("timestamp")
+    fill_dl = _s("fill_deadline")
+    resolve_dl = _s("resolve_deadline")
+    filled_at_existing = _s("filled_at")
 
-    try:
-        now_ts     = int(time.time())
-        emit_ts    = _parse_ts(timestamp_str, now_ts - 3600)
-        fill_ts    = _parse_ts(fill_dl,       emit_ts + 4 * 3600)
-        resolve_ts = _parse_ts(resolve_dl,    emit_ts + 72 * 3600)
-    except Exception as e:
+    emit_ts = _parse_eval_ts(timestamp_str, now_ts - 3600)
+    fill_ts = _parse_eval_ts(fill_dl, emit_ts + FILL_WINDOW_SECONDS)
+    resolve_ts = _parse_eval_ts(resolve_dl, emit_ts + RESOLVE_WINDOW_SECONDS)
+    existing_filled_ts = _parse_eval_ts(filled_at_existing, None)
+
+    if not symbol or direction not in ("LONG", "SHORT"):
         return {"signal_id": signal_id, "outcome": "OPEN",
-                "evaluation_note": f"erreur parsing dates: {e}", "bars_checked": 0,
-                "filled_at": "", "closed_at": "", "exit_price": ""}
+                "evaluation_note": "signal invalide pour évaluation",
+                "bars_checked": 0, "filled_at": filled_at_existing,
+                "closed_at": "", "exit_price": ""}
 
-    now = int(time.time())
+    # Fenêtre à charger : jusqu'à maintenant ou resolve_deadline.
+    eval_end_ts = min(now_ts, resolve_ts)
 
-    # Pas encore le moment d'évaluer
-    if now < fill_ts and now < resolve_ts:
-        klines = _get_klines_since(symbol, emit_ts, limit=EVAL_KLINE_LIMIT)
-        # On vérifie quand même si déjà rempli et résolu avant deadline
-        if not klines:
-            return {"signal_id": signal_id, "outcome": "OPEN",
-                    "evaluation_note": "en cours — pas de données klines",
-                    "bars_checked": 0, "filled_at": "", "closed_at": "", "exit_price": ""}
-    else:
-        klines = _get_klines_since(symbol, emit_ts, limit=EVAL_KLINE_LIMIT)
+    # Pour une ligne déjà OPEN avec filled_at, on démarre au fill existant.
+    # Pour une ligne DIAGNOSTIC/non remplie, on démarre à timestamp.
+    query_start_ts = existing_filled_ts if existing_filled_ts else emit_ts
+    klines = _get_klines_window(symbol, query_start_ts, eval_end_ts)
 
     if not klines:
         return {"signal_id": signal_id, "outcome": "OPEN",
                 "evaluation_note": "klines indisponibles, nouvelle tentative plus tard",
-                "bars_checked": 0, "filled_at": "", "closed_at": "", "exit_price": ""}
+                "bars_checked": 0,
+                "filled_at": filled_at_existing if existing_filled_ts else "",
+                "closed_at": "", "exit_price": ""}
 
     bars_checked = len(klines)
+    fill_price = round((entry_low + entry_high) / 2, 8)
 
-    # ── Phase 1 : chercher le fill (entrée dans la zone) ─────────────────────
-    filled_at_ts  = None
-    fill_bar_idx  = None
-    fill_price    = None
+    # ── Phase 1 : fill ──────────────────────────────────────────────────────
+    if existing_filled_ts:
+        filled_at_ts = existing_filled_ts
+        filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+        fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
+        post_fill = [bar for bar in klines if int(bar["ts"]) > filled_at_ts]
+    else:
+        filled_at_ts = None
+        fill_bar_idx = None
 
-    for i, bar in enumerate(klines):
-        # Dépasse la fenêtre de fill : on arrête la recherche de fill
-        if bar["ts"] > fill_ts:
-            break
-        # Le prix touche la zone d'entrée (low ≤ entry_high ET high ≥ entry_low)
-        if bar["low"] <= entry_high and bar["high"] >= entry_low:
-            # Prix d'entrée simulé : milieu de la zone (conservative)
-            fill_price = round((entry_low + entry_high) / 2, 8)
-            filled_at_ts = bar["ts"]
-            fill_bar_idx = i
-            break
+        for i, bar in enumerate(klines):
+            if bar["ts"] > fill_ts:
+                break
+            if bar["low"] <= entry_high and bar["high"] >= entry_low:
+                filled_at_ts = int(bar["ts"])
+                fill_bar_idx = i
+                break
 
-    # Fill jamais touché et deadline dépassée → NO_FILL
-    if filled_at_ts is None and now >= fill_ts:
-        return {
-            "signal_id":       signal_id,
-            "outcome":         "NO_FILL",
-            "filled_at":       "",
-            "closed_at":       "",
-            "exit_price":      "",
-            "bars_checked":    bars_checked,
-            "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h",
-            "fill_time_minutes": ""
-        }
+        if filled_at_ts is None and now_ts >= fill_ts:
+            return {
+                "signal_id": signal_id,
+                "outcome": "NO_FILL",
+                "filled_at": "",
+                "closed_at": "",
+                "exit_price": "",
+                "bars_checked": bars_checked,
+                "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h",
+                "fill_time_minutes": ""
+            }
 
-    # Fill pas encore atteint, deadline pas encore passée → OPEN
-    if filled_at_ts is None:
-        return {
-            "signal_id":       signal_id,
-            "outcome":         "OPEN",
-            "filled_at":       "",
-            "closed_at":       "",
-            "exit_price":      "",
-            "bars_checked":    bars_checked,
-            "evaluation_note": "en attente de fill"
-        }
+        if filled_at_ts is None:
+            return {
+                "signal_id": signal_id,
+                "outcome": "OPEN",
+                "filled_at": "",
+                "closed_at": "",
+                "exit_price": "",
+                "bars_checked": bars_checked,
+                "evaluation_note": "en attente de fill"
+            }
 
-    # ── Phase 2 : chercher SL ou TP1 après le fill ───────────────────────────
-    # On commence à la barre SUIVANTE après le fill pour éviter le double-comptage.
-    post_fill = klines[fill_bar_idx + 1:]
-    filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
-    fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
+        filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+        fill_time_min = round((filled_at_ts - emit_ts) / 60, 1)
+        post_fill = klines[fill_bar_idx + 1:]
 
+    # ── Phase 2 : SL / TP1 après fill ───────────────────────────────────────
+    prev_close = fill_price
     for bar in post_fill:
-        # Dépassement de la fenêtre de résolution → EXPIRED
-        if bar["ts"] > resolve_ts:
+        ts = int(bar["ts"])
+        if ts > resolve_ts:
             break
 
-        bar_hits_sl = (direction == "LONG"  and bar["low"]  <= stop_loss) or \
+        bar_hits_sl = (direction == "LONG" and bar["low"] <= stop_loss) or \
                       (direction == "SHORT" and bar["high"] >= stop_loss)
-        bar_hits_tp = (direction == "LONG"  and bar["high"] >= tp1) or \
-                      (direction == "SHORT" and bar["low"]  <= tp1)
+        bar_hits_tp = (direction == "LONG" and bar["high"] >= tp1) or \
+                      (direction == "SHORT" and bar["low"] <= tp1)
 
-        # Biais intra-barre : si les deux sont touchés dans la même bougie,
-        # on regarde la bougie précédente pour inférer la direction dominante.
-        # Si la bougie précédente clôture plus près du SL → LOSS, sinon → WIN.
         if bar_hits_sl and bar_hits_tp:
-            prev_close = klines[klines.index(bar) - 1]["close"] if klines.index(bar) > 0 else fill_price
             dist_to_sl = abs(prev_close - stop_loss)
             dist_to_tp = abs(prev_close - tp1)
             outcome = "WIN" if dist_to_tp < dist_to_sl else "LOSS"
-            exit_p  = tp1 if outcome == "WIN" else stop_loss
+            exit_p = tp1 if outcome == "WIN" else stop_loss
             return {
-                "signal_id":       signal_id,
-                "outcome":         outcome,
-                "filled_at":       filled_at_iso,
-                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
-                "exit_price":      exit_p,
-                "bars_checked":    bars_checked,
+                "signal_id": signal_id,
+                "outcome": outcome,
+                "filled_at": filled_at_iso,
+                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "exit_price": exit_p,
+                "bars_checked": bars_checked,
                 "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}",
                 "fill_time_minutes": fill_time_min
             }
 
         if bar_hits_tp:
             return {
-                "signal_id":       signal_id,
-                "outcome":         "WIN",
-                "filled_at":       filled_at_iso,
-                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
-                "exit_price":      tp1,
-                "bars_checked":    bars_checked,
+                "signal_id": signal_id,
+                "outcome": "WIN",
+                "filled_at": filled_at_iso,
+                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "exit_price": tp1,
+                "bars_checked": bars_checked,
                 "evaluation_note": f"TP1 touché. fill={fill_price}",
                 "fill_time_minutes": fill_time_min
             }
 
         if bar_hits_sl:
             return {
-                "signal_id":       signal_id,
-                "outcome":         "LOSS",
-                "filled_at":       filled_at_iso,
-                "closed_at":       datetime.fromtimestamp(bar["ts"], tz=timezone.utc).isoformat(),
-                "exit_price":      stop_loss,
-                "bars_checked":    bars_checked,
+                "signal_id": signal_id,
+                "outcome": "LOSS",
+                "filled_at": filled_at_iso,
+                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                "exit_price": stop_loss,
+                "bars_checked": bars_checked,
                 "evaluation_note": f"SL touché. fill={fill_price}",
                 "fill_time_minutes": fill_time_min
             }
 
-    # Rempli mais ni SL ni TP dans la fenêtre de résolution
-    if now >= resolve_ts:
+        prev_close = bar["close"]
+
+    if now_ts >= resolve_ts:
         return {
-            "signal_id":       signal_id,
-            "outcome":         "EXPIRED",
-            "filled_at":       filled_at_iso,
-            "closed_at":       "",
-            "exit_price":      "",
-            "bars_checked":    bars_checked,
+            "signal_id": signal_id,
+            "outcome": "EXPIRED",
+            "filled_at": filled_at_iso,
+            "closed_at": "",
+            "exit_price": "",
+            "bars_checked": bars_checked,
             "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}",
             "fill_time_minutes": fill_time_min
         }
 
-    # Encore en cours dans la fenêtre de résolution
     return {
-        "signal_id":       signal_id,
-        "outcome":         "OPEN",
-        "filled_at":       filled_at_iso,
-        "closed_at":       "",
-        "exit_price":      "",
-        "bars_checked":    bars_checked,
-        "evaluation_note": f"rempli à {fill_price}, attente SL/TP"
+        "signal_id": signal_id,
+        "outcome": "OPEN",
+        "filled_at": filled_at_iso,
+        "closed_at": "",
+        "exit_price": "",
+        "bars_checked": bars_checked,
+        "evaluation_note": f"rempli à {fill_price}, attente SL/TP",
+        "fill_time_minutes": fill_time_min
     }
 
 
 @app.route("/evaluate_signals", methods=["POST"])
 def evaluate_signals():
     """
-    Reçoit une liste de signaux OPEN depuis Make (Google Sheet).
-    Rejoue les klines 5min pour chaque signal et retourne l'issue.
-    Make itère sur results[] pour mettre à jour la Sheet.
-
-    Input  : {"signals": [{signal_id, symbol, direction, entry_low, entry_high,
-                           stop_loss, tp1, timestamp, fill_deadline, resolve_deadline}, ...]}
-    Output : {"results": [{signal_id, outcome, filled_at, closed_at, exit_price,
-                           bars_checked, evaluation_note}, ...],
-              "evaluated": N, "still_open": M, "resolved": K}
+    Reçoit une liste de signaux DIAGNOSTIC/OPEN depuis Google Apps Script.
+    Input : {"signals": [{signal_id, symbol, direction, entry_low, entry_high,
+                          stop_loss, tp1, timestamp, fill_deadline,
+                          resolve_deadline, filled_at}, ...]}
     """
     try:
-        body    = request.get_json(silent=True) or {}
+        body = request.get_json(silent=True) or {}
         signals_raw = body.get("signals", [])
 
-        # Make Array Aggregator peut envoyer les items sous différentes formes :
-        # - dict normal (idéal)
-        # - string JSON (à parser)
-        # - objet avec des clés numériques (format Make interne)
-        # On normalise tout ici.
         signals = []
         for item in signals_raw:
             if isinstance(item, dict):
@@ -3730,30 +3692,37 @@ def evaluate_signals():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(_evaluate_one, sig): sig for sig in signals}
             for fut in as_completed(futures):
+                sig = futures[fut]
                 try:
                     results.append(fut.result())
                 except Exception as e:
-                    sig = futures[fut]
                     logger.warning("_evaluate_one échec %s: %s", sig.get("signal_id"), e)
                     results.append({
-                        "signal_id":       sig.get("signal_id", "?"),
-                        "outcome":         "OPEN",
+                        "signal_id": sig.get("signal_id", "?"),
+                        "outcome": "OPEN",
                         "evaluation_note": f"erreur évaluation: {e}",
-                        "bars_checked":    0,
-                        "filled_at": "", "closed_at": "", "exit_price": ""
+                        "bars_checked": 0,
+                        "filled_at": sig.get("filled_at", ""),
+                        "closed_at": "",
+                        "exit_price": ""
                     })
 
-        still_open = sum(1 for r in results if r["outcome"] == "OPEN")
-        resolved   = len(results) - still_open
+        still_open = sum(1 for r in results if r.get("outcome") == "OPEN")
+        resolved = len(results) - still_open
+        outcome_counts = {}
+        for r in results:
+            out = r.get("outcome", "?")
+            outcome_counts[out] = outcome_counts.get(out, 0) + 1
 
-        logger.info("evaluate_signals: %d signaux, %d résolus, %d encore OPEN",
-                    len(signals), resolved, still_open)
+        logger.info("evaluate_signals: %d signaux, %d résolus, %d encore OPEN, outcomes=%s",
+                    len(signals), resolved, still_open, outcome_counts)
 
         return jsonify({
-            "results":    results,
-            "evaluated":  len(results),
+            "results": results,
+            "evaluated": len(results),
             "still_open": still_open,
-            "resolved":   resolved
+            "resolved": resolved,
+            "outcome_counts": outcome_counts
         })
 
     except Exception as e:
@@ -3830,7 +3799,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.4-p26",
+        "version": "6.3.3-p26",
         "providers": results
     })
 
@@ -3839,7 +3808,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.4-p26"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.3-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
