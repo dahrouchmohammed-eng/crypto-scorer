@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.2")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.3")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1943,29 +1943,15 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     if flag == "CANDIDAT" and direction == "LONG" and market_regime == "bearish":
         flag = "WATCHLIST"
 
-    # ── v6.3.2 — P2 : WATCHLIST automatique pour setups à fort potentiel ────
-    # Critères : score entre 45 et 52 + direction claire + volume suffisant (>0.50)
-    # + BTC non dangereux + trend non faible + pas de short interdit + late risk ok.
-    # Objectif : ne pas rejeter des setups comme SOL (score 48.6, vol 0.73, aucun
-    # risk_guard) qui ont toutes les caractéristiques d'une bonne WATCHLIST de suivi
-    # mais tombent en REJET uniquement parce que score < 52.
-    # Le prescore n'est pas disponible ici (calculé dans full_analysis) — les autres
-    # critères sont suffisants pour identifier ces cas. Gate 58 inchangé.
-    if (
-        flag == "REJET"
-        and direction in ("LONG", "SHORT")
-        and entry_type != "NEUTRAL"
-        and 45 <= global_score < 52
-        and relative_vol >= 0.50
-        and market_danger_level != "HIGH"
-        and market_regime not in ("danger", "volatile")
-        and not short_forbidden
-        and late_entry_risk < 55
-        and trend_strength != "weak"
-    ):
-        flag = "WATCHLIST"
-        logger.info("V6.3.2 P2 auto-watchlist %s: score=%.1f vol=%.2f trend=%s",
-                    symbol, global_score, relative_vol, trend_strength)
+    # ── v6.3.3 — P4-U : trend=weak interdit en CANDIDAT ────────────────────
+    # Données tracker : 3 des 5 LOSS v6.3.2 avaient trend=weak (SOL×2, XRP).
+    # Un signal CANDIDAT avec tendance faible n'a pas la structure directionnelle
+    # minimale pour un trade exécutable — même avec un bon score.
+    if flag == "CANDIDAT" and trend_strength == "weak":
+        flag             = "WATCHLIST"
+        forced_watchlist = True
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "trend faible"
+        logger.info("V6.3.3 P4-U trend_weak CANDIDAT→WATCHLIST %s", symbol)
 
     # ── V6.0.5 — RÉTROGRADATION + CAP LEVIER si volume MOMENTUM très faible ──
     if entry_type == "MOMENTUM":
@@ -2453,18 +2439,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         max_leverage = min(max_leverage, 3)
         logger.info("V6.0.6f hard_reject %s: %s", symbol, risk_guard_reason)
     elif forced_watchlist and flag != "WATCHLIST":
-        # v6.3.2 — FIX P1 : forced_watchlist s'applique quel que soit le flag entrant.
-        # Avant : 'flag == "CANDIDAT"' → forced_watchlist ignoré si flag=REJET ou WATCHLIST.
-        # Cas problématiques observés en prod :
-        #   - score < 52 → flag naturel = REJET, puis règle 8 déclenche forced_watchlist
-        #     → la condition flag==CANDIDAT ne matchait jamais → flag restait REJET
-        #   - résultat : flag=REJET mais final_decision_reason=WATCHLIST (incohérence)
-        # Fix : on applique forced_watchlist si flag != WATCHLIST (déjà bon) et != REJET.
-        # Condition exacte : forced_watchlist + pas de hard_reject + flag n'est pas déjà WATCHLIST.
+        # v6.3.3 — FIX P1 : forced_watchlist s'applique quel que soit le flag.
+        # v6.3.1 avait 'flag == "CANDIDAT"' ce qui ignorait les cas REJET naturel.
         flag = "WATCHLIST"
         confidence   = min(confidence, 65)
         max_leverage = min(max_leverage, 3)
-        logger.info("V6.3.2 forced_watchlist %s: %s (flag was %s)", symbol, risk_guard_reason, flag)
+        logger.info("V6.3.3 forced_watchlist %s: %s (was %s)", symbol, risk_guard_reason, flag)
 
     # ── V6.0.6g — Règle 1 : futures score minimum pour MOMENTUM CANDIDAT ─────
     # Un MOMENTUM CANDIDAT avec v6_score_futures < 50 n'a pas assez de
@@ -2761,9 +2741,16 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         )
     )
 
+    # ── v6.3.3 — P4-V : promotion WATCHLIST→CANDIDAT suspendue ─────────────
+    # Données tracker v6.3.2 : WR watchlist promues = 34% (22W/43L).
+    # La promotion basée sur vol≥0.50 + futures healthy capturait des setups
+    # déjà en fin de mouvement (volume fort corrèle avec LOSS dans les données).
+    # watchlist_promotion_candidate reste calculé et loggué pour calibration future,
+    # mais ne produit plus de promotion vers CANDIDAT.
+    # Réactivation quand WR watchlist promues ≥ 60% sur ≥ 20 trades résolus.
     if watchlist_promotion_candidate:
-        flag = "CANDIDAT"
-        reasons.append("PROMOTION WATCHLIST : zone futures saine, volume suffisant, timing non tardif, risque crowded non détecté")
+        logger.info("V6.3.3 P4-V promotion SUSPENDUE %s (loggué uniquement)", symbol)
+        # flag reste WATCHLIST
 
     elif signal_downgrade_candidate:
         flag = "WATCHLIST"
@@ -3757,7 +3744,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.2-p26",
+        "version": "6.3.3-p26",
         "providers": results
     })
 
@@ -3766,7 +3753,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.2-p26"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.3-p26"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
