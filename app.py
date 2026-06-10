@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.6-evaltimefix")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.7-evaldebug")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3326,13 +3326,14 @@ def full_analysis():
 #   1. Fill dans la zone d'entrée avant fill_deadline.
 #   2. Après fill, TP1 ou SL touché en premier avant resolve_deadline.
 #
-# v6.3.6 — FIX évaluation 72h + fill_time :
+# v6.3.7 — FIX évaluation 72h + debug NO_FILL :
 # - pagination klines 5m jusqu'à min(now, resolve_deadline), au lieu d'une seule
 #   page limitée à ~16h/24h ;
 # - prise en compte de filled_at déjà présent pour les lignes OPEN ;
 # - si filled_at existe, on ne recherche plus le fill, on vérifie directement SL/TP ;
 # - fill_time_minutes négatif est neutralisé (champ vide + note timezone), pour
-#   éviter de polluer les statistiques avec des durées impossibles.
+#   éviter de polluer les statistiques avec des durées impossibles ;
+# - notes NO_FILL enrichies avec debug fenêtre de fill (max_high/min_low/first/last).
 
 EVAL_KLINE_INTERVAL = "5m"
 EVAL_KLINE_SECONDS  = 5 * 60
@@ -3402,6 +3403,54 @@ def _safe_fill_time_minutes(filled_at_ts, emit_ts):
         return delta_min, ""
     except Exception:
         return "", " | fill_time non fiable — erreur calcul"
+
+
+def _fmt_eval_ts(ts):
+    try:
+        if ts is None:
+            return ""
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return str(ts)
+
+
+def _nofill_debug_note(klines, emit_ts, fill_ts, entry_low, entry_high, direction):
+    """
+    Diagnostic compact ajouté aux NO_FILL.
+    Objectif : vérifier si Python a regardé la bonne fenêtre et si les highs/lows
+    reçus par API auraient dû déclencher le fill.
+    """
+    try:
+        fill_bars = [
+            b for b in (klines or [])
+            if int(b.get("ts", 0)) <= int(fill_ts)
+        ]
+        if not fill_bars:
+            return (
+                f" | debug: emit={_fmt_eval_ts(emit_ts)} fill_dl={_fmt_eval_ts(fill_ts)} "
+                f"bars_fill=0 entry=[{entry_low}-{entry_high}] dir={direction}"
+            )
+
+        highs = [float(b["high"]) for b in fill_bars]
+        lows = [float(b["low"]) for b in fill_bars]
+        first_ts = int(fill_bars[0]["ts"])
+        last_ts = int(fill_bars[-1]["ts"])
+        max_high = max(highs)
+        min_low = min(lows)
+
+        would_fill = any(
+            float(b["low"]) <= float(entry_high) and float(b["high"]) >= float(entry_low)
+            for b in fill_bars
+        )
+
+        return (
+            f" | debug: emit={_fmt_eval_ts(emit_ts)} fill_dl={_fmt_eval_ts(fill_ts)} "
+            f"first={_fmt_eval_ts(first_ts)} last={_fmt_eval_ts(last_ts)} "
+            f"bars_fill={len(fill_bars)} max_high={max_high:.8g} min_low={min_low:.8g} "
+            f"entry=[{entry_low}-{entry_high}] dir={direction} would_fill={would_fill}"
+        )
+    except Exception as e:
+        return f" | debug_no_fill_error={e}"
 
 
 
@@ -3527,8 +3576,26 @@ def _evaluate_one(sig):
     filled_at_existing = _s("filled_at")
 
     emit_ts = _parse_eval_ts(timestamp_str, now_ts - 3600)
-    fill_ts = _parse_eval_ts(fill_dl, emit_ts + FILL_WINDOW_SECONDS)
-    resolve_ts = _parse_eval_ts(resolve_dl, emit_ts + RESOLVE_WINDOW_SECONDS)
+
+    # v6.3.7 FIX (merge Claude) — fill_ts et resolve_ts recalculés depuis emit_ts.
+    # Apps Script lit fill_deadline depuis Sheets qui peut le stocker sans offset UTC
+    # explicite (format Make = string sans +00:00). Apps Script parse en heure locale
+    # (UTC+1 Maroc) → fill_deadline reçu avec 1h de décalage → fenêtre réduite d'1h
+    # → bougies dans la vraie fenêtre classées hors-deadline → faux NO_FILL confirmés
+    # sur ZECUSDT et MUUSDT.
+    # Solution : ignorer les deadlines transmises, recalculer depuis emit_ts (toujours
+    # stocké en ISO UTC explicite). Les valeurs reçues sont loggées pour comparaison.
+    fill_dl_received = _parse_eval_ts(fill_dl, None)
+    if fill_dl_received and abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS)) > 300:
+        logger.warning(
+            "eval %s: fill_deadline reçu (%s) diffère de emit+4h (%s) de %ds — recalcul depuis emit_ts",
+            signal_id,
+            _fmt_eval_ts(fill_dl_received),
+            _fmt_eval_ts(emit_ts + FILL_WINDOW_SECONDS),
+            abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS))
+        )
+    fill_ts    = emit_ts + FILL_WINDOW_SECONDS
+    resolve_ts = emit_ts + RESOLVE_WINDOW_SECONDS
     existing_filled_ts = _parse_eval_ts(filled_at_existing, None)
 
     if not symbol or direction not in ("LONG", "SHORT"):
@@ -3581,7 +3648,10 @@ def _evaluate_one(sig):
                 "closed_at": "",
                 "exit_price": "",
                 "bars_checked": bars_checked,
-                "evaluation_note": f"zone [{entry_low}–{entry_high}] non touchée en 4h",
+                "evaluation_note": (
+                    f"zone [{entry_low}–{entry_high}] non touchée en 4h"
+                    + _nofill_debug_note(klines, emit_ts, fill_ts, entry_low, entry_high, direction)
+                ),
                 "fill_time_minutes": ""
             }
 
@@ -3825,7 +3895,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.6-evaltimefix",
+        "version": "6.3.7-evaldebug",
         "providers": results
     })
 
@@ -3834,7 +3904,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.6-evaltimefix"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.7-evaldebug"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
