@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.8-evaldebug")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.9")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3576,24 +3576,37 @@ def _evaluate_one(sig):
     filled_at_existing = _s("filled_at")
 
     emit_ts = _parse_eval_ts(timestamp_str, now_ts - 3600)
+    # v6.3.8 DEBUG : logger la valeur brute reçue pour tracer l'origine du décalage +7h
+    logger.info("eval %s: timestamp_raw=%r emit_parsed=%s",
+                signal_id, timestamp_str, _fmt_eval_ts(emit_ts))
 
-    # v6.3.7 FIX (merge Claude) — fill_ts et resolve_ts recalculés depuis emit_ts.
-    # Apps Script lit fill_deadline depuis Sheets qui peut le stocker sans offset UTC
-    # explicite (format Make = string sans +00:00). Apps Script parse en heure locale
-    # (UTC+1 Maroc) → fill_deadline reçu avec 1h de décalage → fenêtre réduite d'1h
-    # → bougies dans la vraie fenêtre classées hors-deadline → faux NO_FILL confirmés
-    # sur ZECUSDT et MUUSDT.
-    # Solution : ignorer les deadlines transmises, recalculer depuis emit_ts (toujours
-    # stocké en ISO UTC explicite). Les valeurs reçues sont loggées pour comparaison.
+    # v6.3.9 FIX — correction de emit_ts via fill_deadline si incohérence détectée.
+    #
+    # Contexte : Apps Script lit la colonne 'timestamp' depuis Google Sheets et la
+    # sérialise avec un décalage observé de +7-8h (origine exacte inconnue — probablement
+    # double-conversion timezone dans la chaîne Make → Sheets → Apps Script).
+    # Conséquence : emit_ts faux → fill_ts recalculé dans le futur → fenêtre klines
+    # complètement décalée → OPEN en attente alors que le trade était clôturable.
+    #
+    # Solution : fill_deadline est fiable (écrit par Python directement via Make,
+    # pas retouché par Apps Script dans la chaîne critique). Si fill_deadline et
+    # emit_ts sont incohérents (différence > 15 min de la cible emit+4h), on
+    # reconstruit emit_ts = fill_deadline_reçu - FILL_WINDOW_SECONDS.
     fill_dl_received = _parse_eval_ts(fill_dl, None)
-    if fill_dl_received and abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS)) > 300:
-        logger.warning(
-            "eval %s: fill_deadline reçu (%s) diffère de emit+4h (%s) de %ds — recalcul depuis emit_ts",
-            signal_id,
-            _fmt_eval_ts(fill_dl_received),
-            _fmt_eval_ts(emit_ts + FILL_WINDOW_SECONDS),
-            abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS))
-        )
+    if fill_dl_received:
+        ecart = abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS))
+        if ecart > 15 * 60:   # tolérance 15 min pour petits décalages légitimes
+            emit_ts_corrige = fill_dl_received - FILL_WINDOW_SECONDS
+            logger.warning(
+                "eval %s: emit_ts incohérent avec fill_deadline (ecart=%ds) — "
+                "correction: emit %s → %s (depuis fill_deadline %s)",
+                signal_id, ecart,
+                _fmt_eval_ts(emit_ts),
+                _fmt_eval_ts(emit_ts_corrige),
+                _fmt_eval_ts(fill_dl_received)
+            )
+            emit_ts = emit_ts_corrige
+
     fill_ts    = emit_ts + FILL_WINDOW_SECONDS
     resolve_ts = emit_ts + RESOLVE_WINDOW_SECONDS
     existing_filled_ts = _parse_eval_ts(filled_at_existing, None)
@@ -3674,7 +3687,8 @@ def _evaluate_one(sig):
                     f"en attente de fill"
                     + _nofill_debug_note(klines, emit_ts, fill_ts, entry_low, entry_high, direction)
                     + f" | now={_fmt_eval_ts(now_ts)} fill_dl={_fmt_eval_ts(fill_ts)}"
-                    + (f" now<fill_ts={'oui' if now_ts < fill_ts else 'non'}")
+                    + f" now<fill_ts={'oui' if now_ts < fill_ts else 'non'}"
+                    + f" ts_raw={repr(timestamp_str)}"
                 )
             }
 
@@ -3907,7 +3921,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.8-evaldebug",
+        "version": "6.3.9",
         "providers": results
     })
 
@@ -3916,7 +3930,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.8-evaldebug"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.9"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
