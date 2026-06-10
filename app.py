@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.2")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.2.1")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1155,11 +1155,43 @@ def calculate_relative_volume(volumes, period=20):
         return 0
     return round(volumes[-2] / avg, 2)
 
+def compute_btc_micro_context(btc_klines_5m):
+    """
+    v6.4.2.1 — Contexte BTC micro en 5m pour logging uniquement.
+
+    Important : cette fonction NE pilote PAS le market_regime ni le scoring.
+    Elle sert à alimenter WATCHLIST_LOG pour analyser les squeezes BTC
+    au moment T du signal.
+    """
+    empty = {
+        "btc_variation_15m": 0,
+        "btc_variation_30m": 0,
+    }
+    try:
+        if not btc_klines_5m or len(btc_klines_5m) < 7:
+            return empty
+        closes = [float(k[4]) for k in btc_klines_5m]
+        # Sur intervalle 5m : 15m = 3 intervalles, 30m = 6 intervalles.
+        variation_15m = ((closes[-1] - closes[-4]) / closes[-4] * 100) if len(closes) >= 4 and closes[-4] > 0 else 0
+        variation_30m = ((closes[-1] - closes[-7]) / closes[-7] * 100) if len(closes) >= 7 and closes[-7] > 0 else 0
+        return {
+            "btc_variation_15m": round(variation_15m, 2),
+            "btc_variation_30m": round(variation_30m, 2),
+        }
+    except Exception as e:
+        logger.warning("compute_btc_micro_context échec: %s", e)
+        return empty
+
+
 def detect_market_regime(btc_klines, return_details=False):
     """
     Régime BTC enrichi V4.7/V5.
     Retour simple par défaut pour compatibilité.
     Si return_details=True, retourne (regime, details).
+
+    v6.4.2.1 — IMPORTANT : cette fonction reste basée sur BTC 1h, comme en v6.4.1,
+    pour ne pas modifier le scoring. Les variations 15m/30m sont ajoutées ensuite
+    via compute_btc_micro_context() et ne servent qu'au logging WATCHLIST_LOG.
     """
     empty = {
         "market_danger_score": 50,
@@ -1186,13 +1218,10 @@ def detect_market_regime(btc_klines, return_details=False):
     current = closes[-1]
 
     atr_pct       = (atr / current) * 100 if current > 0 else 0
-    # v6.4.2 — Contexte BTC calculé sur klines 5m.
-    # Indices : 15m=3 intervalles, 30m=6, 2h=24, 4h=48, 12h=144.
-    variation_15m = ((closes[-1] - closes[-4]) / closes[-4] * 100) if len(closes) >= 4 and closes[-4] > 0 else 0
-    variation_30m = ((closes[-1] - closes[-7]) / closes[-7] * 100) if len(closes) >= 7 and closes[-7] > 0 else 0
-    variation_2h  = ((closes[-1] - closes[-25]) / closes[-25] * 100) if len(closes) >= 25 and closes[-25] > 0 else 0
-    variation_4h  = ((closes[-1] - closes[-49]) / closes[-49] * 100) if len(closes) >= 49 and closes[-49] > 0 else 0
-    variation_12h = ((closes[-1] - closes[-145]) / closes[-145] * 100) if len(closes) >= 145 and closes[-145] > 0 else 0
+    # Formules historiques v6.4.1 sur bougies 1h.
+    variation_2h  = ((closes[-1] - closes[-3]) / closes[-3] * 100) if len(closes) >= 3 and closes[-3] > 0 else 0
+    variation_4h  = ((closes[-1] - closes[-5]) / closes[-5] * 100) if len(closes) >= 5 and closes[-5] > 0 else 0
+    variation_12h = ((closes[-1] - closes[-13]) / closes[-13] * 100) if len(closes) >= 13 and closes[-13] > 0 else 0
 
     danger_score = 0
     danger_reasons = []
@@ -1240,15 +1269,14 @@ def detect_market_regime(btc_klines, return_details=False):
         "market_danger_level": danger_level,
         "btc_rsi": rsi,
         "btc_atr_pct": round(atr_pct, 2),
-        "btc_variation_15m": round(variation_15m, 2),
-        "btc_variation_30m": round(variation_30m, 2),
+        "btc_variation_15m": 0,
+        "btc_variation_30m": 0,
         "btc_variation_2h": round(variation_2h, 2),
         "btc_variation_4h": round(variation_4h, 2),
         "btc_variation_12h": round(variation_12h, 2),
         "btc_note": ", ".join(danger_reasons) if danger_reasons else "BTC stable"
     }
     return (regime, details) if return_details else regime
-
 
 def normalize_symbol(symbol):
     return str(symbol or "").upper().strip()
@@ -2959,8 +2987,14 @@ def full_analysis():
             })
 
         # ── Market regime BTC enrichi v4.7 ──────────────────────────────────
-        btc_klines, btc_data_source = get_klines("BTCUSDT", interval="5m", limit=200)
+        # v6.4.2.1 : le scoring reste basé sur BTC 1h comme en v6.4.1.
+        # Les champs 15m/30m sont calculés séparément en 5m et ajoutés au JSON
+        # uniquement pour la corrélation WATCHLIST_LOG.
+        btc_klines, btc_data_source = get_klines("BTCUSDT", limit=80)
         market_regime, market_details = detect_market_regime(btc_klines, return_details=True)
+
+        btc_klines_5m, btc_5m_data_source = get_klines("BTCUSDT", interval="5m", limit=200)
+        market_details.update(compute_btc_micro_context(btc_klines_5m))
 
         # ── PRESCORE v5 : tradability avant momentum brut ───────────────────
         scored = []
@@ -3081,7 +3115,7 @@ def full_analysis():
         # Score final : priorité au score complet puis faible late_entry_risk.
         results.sort(key=lambda x: (x["score"], -x.get("late_entry_risk", 0)), reverse=True)
 
-        data_sources_used = {data_source_batch, btc_data_source}
+        data_sources_used = {data_source_batch, btc_data_source, btc_5m_data_source}
         data_sources_used.update([r.get("data_source", "UNAVAILABLE") for r in results])
         data_source_run = "SPOT_FALLBACK" if "SPOT_FALLBACK" in data_sources_used else (
             "BYBIT_FUTURES" if "BYBIT_FUTURES" in data_sources_used else (
@@ -3997,7 +4031,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.2",
+        "version": "6.4.2.1",
         "providers": results
     })
 
@@ -4006,7 +4040,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.2"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.2.1"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
