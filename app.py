@@ -27,6 +27,12 @@ _COOLDOWN_LOCK = threading.Lock()
 # Parallélisme des appels réseau par symbole.
 MAX_WORKERS = 8
 
+# v6.4.0 — Parallélisme réduit pour /evaluate_signals.
+# L'évaluation fait plusieurs pages klines 5m par signal → Binance/Bybit rate-limit
+# rapidement si MAX_WORKERS=8 est utilisé sur des batches de 60-100 signaux.
+# EVAL_MAX_WORKERS=3 évite les klines indisponibles par saturation provider.
+EVAL_MAX_WORKERS = int(os.environ.get("EVAL_MAX_WORKERS", "3"))
+
 # ─── SOURCES DE DONNÉES ─────────────────────────────────────────────────────────
 # Binance Futures (fapi.binance.com) activé par défaut — source principale.
 # Bybit Futures en fallback secondaire si Binance est bloqué.
@@ -185,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.9")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.0")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3405,6 +3411,24 @@ def _safe_fill_time_minutes(filled_at_ts, emit_ts):
         return "", " | fill_time non fiable — erreur calcul"
 
 
+def _emit_ts_from_signal_id(signal_id):
+    """
+    v6.4.0 — Extrait le timestamp Unix depuis le signal_id.
+    Format attendu : SYMBOL-UNIXTS  (ex: ZECUSDT-1781042399)
+    Le Unix timestamp dans le signal_id est généré directement par Python,
+    sans passer par Google Sheets ni Apps Script → source fiable, sans décalage.
+    Retourne None si le signal_id ne contient pas de timestamp valide.
+    """
+    try:
+        tail = str(signal_id).rsplit("-", 1)[-1]
+        ts = int(float(tail))
+        if ts > 1_000_000_000:
+            return ts
+    except Exception:
+        pass
+    return None
+
+
 def _fmt_eval_ts(ts):
     try:
         if ts is None:
@@ -3575,37 +3599,45 @@ def _evaluate_one(sig):
     resolve_dl = _s("resolve_deadline")
     filled_at_existing = _s("filled_at")
 
-    emit_ts = _parse_eval_ts(timestamp_str, now_ts - 3600)
-    # v6.3.8 DEBUG : logger la valeur brute reçue pour tracer l'origine du décalage +7h
-    logger.info("eval %s: timestamp_raw=%r emit_parsed=%s",
-                signal_id, timestamp_str, _fmt_eval_ts(emit_ts))
+    # ── v6.4.0 — emit_ts : signal_id > timestamp_sheet > fill_deadline ──────
+    #
+    # Ordre de priorité :
+    #   1. signal_id epoch Unix  — généré par Python, jamais retouché par Sheets/Apps Script
+    #   2. timestamp_sheet       — fallback si signal_id sans epoch
+    #   3. fill_deadline - 4h    — fallback de secours si timestamp incohérent (v6.3.9)
+    #
+    # Le timestamp Google Sheets subit un décalage +7h observé (double-conversion
+    # timezone dans la chaîne Make → Sheets → Apps Script → JSON). Le Unix timestamp
+    # dans signal_id contourne complètement cette chaîne.
 
-    # v6.3.9 FIX — correction de emit_ts via fill_deadline si incohérence détectée.
-    #
-    # Contexte : Apps Script lit la colonne 'timestamp' depuis Google Sheets et la
-    # sérialise avec un décalage observé de +7-8h (origine exacte inconnue — probablement
-    # double-conversion timezone dans la chaîne Make → Sheets → Apps Script).
-    # Conséquence : emit_ts faux → fill_ts recalculé dans le futur → fenêtre klines
-    # complètement décalée → OPEN en attente alors que le trade était clôturable.
-    #
-    # Solution : fill_deadline est fiable (écrit par Python directement via Make,
-    # pas retouché par Apps Script dans la chaîne critique). Si fill_deadline et
-    # emit_ts sont incohérents (différence > 15 min de la cible emit+4h), on
-    # reconstruit emit_ts = fill_deadline_reçu - FILL_WINDOW_SECONDS.
+    emit_from_id    = _emit_ts_from_signal_id(signal_id)
+    emit_from_sheet = _parse_eval_ts(timestamp_str, now_ts - 3600)
+
+    logger.info("eval %s: timestamp_raw=%r emit_from_id=%s emit_from_sheet=%s",
+                signal_id, timestamp_str,
+                _fmt_eval_ts(emit_from_id), _fmt_eval_ts(emit_from_sheet))
+
+    if emit_from_id:
+        emit_ts     = emit_from_id
+        emit_source = "signal_id"
+    else:
+        emit_ts     = emit_from_sheet
+        emit_source = "timestamp_sheet"
+
     fill_dl_received = _parse_eval_ts(fill_dl, None)
     if fill_dl_received:
         ecart = abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS))
-        if ecart > 15 * 60:   # tolérance 15 min pour petits décalages légitimes
+        if not emit_from_id and ecart > 15 * 60:
+            # Correction v6.3.9 : timestamp_sheet incohérent, reconstruire depuis fill_deadline
             emit_ts_corrige = fill_dl_received - FILL_WINDOW_SECONDS
             logger.warning(
-                "eval %s: emit_ts incohérent avec fill_deadline (ecart=%ds) — "
-                "correction: emit %s → %s (depuis fill_deadline %s)",
-                signal_id, ecart,
-                _fmt_eval_ts(emit_ts),
-                _fmt_eval_ts(emit_ts_corrige),
-                _fmt_eval_ts(fill_dl_received)
+                "eval %s: emit_ts incohérent (source=%s ecart=%ds) — "
+                "correction: %s → %s (fill_deadline rebuild)",
+                signal_id, emit_source, ecart,
+                _fmt_eval_ts(emit_ts), _fmt_eval_ts(emit_ts_corrige)
             )
-            emit_ts = emit_ts_corrige
+            emit_ts     = emit_ts_corrige
+            emit_source = "fill_deadline_rebuild"
 
     fill_ts    = emit_ts + FILL_WINDOW_SECONDS
     resolve_ts = emit_ts + RESOLVE_WINDOW_SECONDS
@@ -3811,7 +3843,7 @@ def evaluate_signals():
                             "results": []}), 400
 
         results = []
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=EVAL_MAX_WORKERS) as executor:
             futures = {executor.submit(_evaluate_one, sig): sig for sig in signals}
             for fut in as_completed(futures):
                 sig = futures[fut]
@@ -3921,7 +3953,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.9",
+        "version": "6.4.0",
         "providers": results
     })
 
@@ -3930,7 +3962,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.9"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.0"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
