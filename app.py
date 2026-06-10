@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.0")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.1")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3413,19 +3413,39 @@ def _safe_fill_time_minutes(filled_at_ts, emit_ts):
 
 def _emit_ts_from_signal_id(signal_id):
     """
-    v6.4.0 — Extrait le timestamp Unix depuis le signal_id.
-    Format attendu : SYMBOL-UNIXTS  (ex: ZECUSDT-1781042399)
-    Le Unix timestamp dans le signal_id est généré directement par Python,
-    sans passer par Google Sheets ni Apps Script → source fiable, sans décalage.
-    Retourne None si le signal_id ne contient pas de timestamp valide.
+    v6.4.1 — Extrait uniquement un vrai timestamp Unix depuis signal_id.
+
+    Accepte :
+    - Unix seconds plausible : 1700000000 → 2100000000
+    - Unix milliseconds plausible : 1700000000000 → 2100000000000
+
+    Rejette :
+    - YYYYMMDDHHMMSS, ex: 20260610103415
+      car ce n'est pas un timestamp Unix.
     """
     try:
-        tail = str(signal_id).rsplit("-", 1)[-1]
+        tail = str(signal_id or "").rsplit("-", 1)[-1].strip()
+
+        if not tail:
+            return None
+
+        # Rejeter explicitement les formats YYYYMMDDHHMMSS
+        if len(tail) == 14 and tail.startswith("20"):
+            return None
+
         ts = int(float(tail))
-        if ts > 1_000_000_000:
+
+        # Unix seconds plausible : environ 2023 → 2036
+        if 1_700_000_000 <= ts <= 2_100_000_000:
             return ts
+
+        # Unix milliseconds plausible
+        if 1_700_000_000_000 <= ts <= 2_100_000_000_000:
+            return ts // 1000
+
     except Exception:
         pass
+
     return None
 
 
@@ -3953,7 +3973,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.0",
+        "version": "6.4.1",
         "providers": results
     })
 
@@ -3962,7 +3982,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.0"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.1"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
