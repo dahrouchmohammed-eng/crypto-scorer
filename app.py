@@ -31,7 +31,7 @@ MAX_WORKERS = 8
 # L'évaluation fait plusieurs pages klines 5m par signal → Binance/Bybit rate-limit
 # rapidement si MAX_WORKERS=8 est utilisé sur des batches de 60-100 signaux.
 # EVAL_MAX_WORKERS=3 évite les klines indisponibles par saturation provider.
-EVAL_MAX_WORKERS = int(os.environ.get("EVAL_MAX_WORKERS", "3"))
+EVAL_MAX_WORKERS = int(os.environ.get("EVAL_MAX_WORKERS", "2"))
 
 # ─── SOURCES DE DONNÉES ─────────────────────────────────────────────────────────
 # Binance Futures (fapi.binance.com) activé par défaut — source principale.
