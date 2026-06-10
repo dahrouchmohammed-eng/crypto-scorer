@@ -185,7 +185,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.7-evaldebug")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.3.8-evaldebug")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -3614,7 +3614,14 @@ def _evaluate_one(sig):
 
     if not klines:
         return {"signal_id": signal_id, "outcome": "OPEN",
-                "evaluation_note": "klines indisponibles, nouvelle tentative plus tard",
+                "evaluation_note": (
+                    f"klines indisponibles, nouvelle tentative plus tard"
+                    f" | debug: emit={_fmt_eval_ts(emit_ts)}"
+                    f" fill_dl={_fmt_eval_ts(fill_ts)}"
+                    f" now={_fmt_eval_ts(now_ts)}"
+                    f" query_start={_fmt_eval_ts(query_start_ts)}"
+                    f" eval_end={_fmt_eval_ts(eval_end_ts)}"
+                ),
                 "bars_checked": 0,
                 "filled_at": filled_at_existing if existing_filled_ts else "",
                 "closed_at": "", "exit_price": ""}
@@ -3663,7 +3670,12 @@ def _evaluate_one(sig):
                 "closed_at": "",
                 "exit_price": "",
                 "bars_checked": bars_checked,
-                "evaluation_note": "en attente de fill"
+                "evaluation_note": (
+                    f"en attente de fill"
+                    + _nofill_debug_note(klines, emit_ts, fill_ts, entry_low, entry_high, direction)
+                    + f" | now={_fmt_eval_ts(now_ts)} fill_dl={_fmt_eval_ts(fill_ts)}"
+                    + (f" now<fill_ts={'oui' if now_ts < fill_ts else 'non'}")
+                )
             }
 
         filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
@@ -3895,7 +3907,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.3.7-evaldebug",
+        "version": "6.3.8-evaldebug",
         "providers": results
     })
 
@@ -3904,7 +3916,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.7-evaldebug"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.3.8-evaldebug"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
