@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.2.1")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.2.2")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -230,6 +230,24 @@ RESOLVE_WINDOW_SECONDS = int(os.environ.get("RESOLVE_WINDOW_SECONDS", str(72 * 3
 TIER1_ALWAYS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"]
 EXCLUDED_SUFFIXES = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
 EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT"}
+
+# v6.4.2.2 — Dynamic universe guard :
+# On conserve l'univers dynamique, mais on exclut les instruments non-crypto /
+# equity-like / ETF-like qui peuvent apparaître chez certains providers et polluer
+# le scoring crypto. Cette liste n'est PAS une whitelist : toutes les autres
+# paires crypto USDT restent autorisées si elles passent les filtres de liquidité.
+EXCLUDED_NON_CRYPTO_SYMBOLS = {
+    # Observés dans les runs récents
+    "SOXLUSDT", "MRVLUSDT", "BTWUSDT",
+
+    # Actions tokenisées / equity-like fréquentes selon providers
+    "AAPLUSDT", "AMZNUSDT", "AMDUSDT", "COINUSDT", "GOOGLUSDT",
+    "METAUSDT", "MSFTUSDT", "MSTRUSDT", "NFLXUSDT", "NVDAUSDT",
+    "PLTRUSDT", "TSLAUSDT",
+
+    # ETF / leveraged equity-like
+    "SOXSUSDT", "SPYUSDT", "QQQUSDT", "TQQQUSDT", "SQQQUSDT",
+}
 
 # Classes d'actifs pour SL / levier (factorisé : était dupliqué dans score_symbol)
 MEMECOINS = {"DOGEUSDT", "WIFUSDT", "PEPEUSDT", "BONKUSDT", "FLOKIUSDT", "BOMEUSDT"}
@@ -1157,7 +1175,7 @@ def calculate_relative_volume(volumes, period=20):
 
 def compute_btc_micro_context(btc_klines_5m):
     """
-    v6.4.2.1 — Contexte BTC micro en 5m pour logging uniquement.
+    v6.4.2.2 — Contexte BTC micro en 5m pour logging uniquement.
 
     Important : cette fonction NE pilote PAS le market_regime ni le scoring.
     Elle sert à alimenter WATCHLIST_LOG pour analyser les squeezes BTC
@@ -1189,7 +1207,7 @@ def detect_market_regime(btc_klines, return_details=False):
     Retour simple par défaut pour compatibilité.
     Si return_details=True, retourne (regime, details).
 
-    v6.4.2.1 — IMPORTANT : cette fonction reste basée sur BTC 1h, comme en v6.4.1,
+    v6.4.2.2 — IMPORTANT : cette fonction reste basée sur BTC 1h, comme en v6.4.1,
     pour ne pas modifier le scoring. Les variations 15m/30m sont ajoutées ensuite
     via compute_btc_micro_context() et ne servent qu'au logging WATCHLIST_LOG.
     """
@@ -1301,6 +1319,8 @@ def is_tradeable_usdt_symbol(symbol):
     if not symbol.endswith("USDT"):
         return False
     if symbol in EXCLUDED_SYMBOLS:
+        return False
+    if symbol in EXCLUDED_NON_CRYPTO_SYMBOLS:
         return False
     if symbol.endswith(EXCLUDED_SUFFIXES):
         return False
@@ -1977,6 +1997,14 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
 
     global_score = round(max(0, global_score), 1)
 
+    # ── Gardes décisionnelles initialisées tôt ───────────────────────────────
+    # v6.4.2.2 — évite un UnboundLocalError quand P4-U trend=weak transforme
+    # un CANDIDAT en WATCHLIST avant le bloc post-V6.
+    hard_reject = False
+    forced_watchlist = False
+    risk_guard_reason = "aucun"
+    decision_explain = ""
+
     # ── FLAG ─────────────────────────────────────────────────────────────────
     if global_score >= 58:
         flag = "CANDIDAT"
@@ -2307,10 +2335,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     # ── V6.0.6f — REGLES DE GARDE POST-V6 ──────────────────────────────────────
     # hard_reject=True → REJET immuable
     # forced_watchlist=True → WATCHLIST si CANDIDAT, immuable
-    hard_reject      = False
-    forced_watchlist = False
-    risk_guard_reason = "aucun"
-    decision_explain  = ""
+    # v6.4.2.2 : variables déjà initialisées avant P4-U ; ne pas les réinitialiser ici.
 
     futures_detail  = v6.get("v6_futures_detail", {}) or {}
     taker_pts       = futures_detail.get("taker", 0)
@@ -2987,7 +3012,7 @@ def full_analysis():
             })
 
         # ── Market regime BTC enrichi v4.7 ──────────────────────────────────
-        # v6.4.2.1 : le scoring reste basé sur BTC 1h comme en v6.4.1.
+        # v6.4.2.2 : le scoring reste basé sur BTC 1h comme en v6.4.1.
         # Les champs 15m/30m sont calculés séparément en 5m et ajoutés au JSON
         # uniquement pour la corrélation WATCHLIST_LOG.
         btc_klines, btc_data_source = get_klines("BTCUSDT", limit=80)
@@ -4031,7 +4056,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.2.1",
+        "version": "6.4.2.2",
         "providers": results
     })
 
@@ -4040,7 +4065,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.2.1"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.2.2"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
