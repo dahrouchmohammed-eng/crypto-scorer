@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.2.2")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.3")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -239,6 +239,8 @@ EXCLUDED_SYMBOLS = {"USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "BUSDUSDT", "EURUSDT"}
 EXCLUDED_NON_CRYPTO_SYMBOLS = {
     # Observés dans les runs récents
     "SOXLUSDT", "MRVLUSDT", "BTWUSDT",
+    # Métaux précieux / instruments non crypto
+    "XAUUSDT", "XAGUSDT",
 
     # Actions tokenisées / equity-like fréquentes selon providers
     "AAPLUSDT", "AMZNUSDT", "AMDUSDT", "COINUSDT", "GOOGLUSDT",
@@ -401,6 +403,8 @@ def log_signal(entry):
             "watchlist_promotion_candidate": entry.get("watchlist_promotion_candidate"),
             "signal_downgrade_candidate": entry.get("signal_downgrade_candidate"),
             "final_decision_reason": entry.get("final_decision_reason"),
+            "signal_quality_bucket": entry.get("signal_quality_bucket"),
+            "telegram_rule_notes": entry.get("telegram_rule_notes"),
         }
         with _SIGNAL_LOG_LOCK:
             with open(SIGNAL_LOG_FILE, "a") as f:
@@ -527,6 +531,9 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "watchlist_promotion_candidate": r.get("watchlist_promotion_candidate", False),
         "signal_downgrade_candidate": r.get("signal_downgrade_candidate", False),
         "final_decision_reason": r.get("final_decision_reason", r.get("decision_explain", "")),
+        # ── Champs sélection Telegram v6.4.3 ───────────────────────────────
+        "signal_quality_bucket": r.get("signal_quality_bucket", "STANDARD"),
+        "telegram_rule_notes": r.get("telegram_rule_notes", ""),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
@@ -2590,6 +2597,110 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
 
+    # ── V6.4.3 — TELEGRAM BUCKET ENGINE ─────────────────────────────────────
+    # Objectif : ne plus sélectionner Telegram par score brut, mais par patterns
+    # observés dans WATCHLIST_LOG v6.4.2.2 (~395 trades résolus).
+    # Cette couche intervient APRÈS le decision_engine v6.1 et AVANT les caps
+    # finaux afin de pouvoir :
+    #   - promouvoir uniquement les LONG_PREMIUM mesurés comme robustes ;
+    #   - bloquer les SHORT dangereux côté Telegram ;
+    #   - conserver les cas intéressants en WATCHLIST diagnostic.
+    signal_quality_bucket = "STANDARD"
+    telegram_rule_notes = ""
+    btc_var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
+
+    is_long_premium = (
+        direction == "LONG"
+        and 52 <= global_score < 58
+        and relative_vol is not None and relative_vol < 1.5
+        and position_range is not None and position_range < 0.85
+        and market_regime in ("bullish", "neutral")
+        and market_danger_level != "HIGH"
+        and trend_strength != "strong"
+        and late_entry_level != "HIGH"
+        and rr_valid
+        and data_source != "SPOT_FALLBACK"
+    )
+
+    is_short_premium_candidate = (
+        direction == "SHORT"
+        and entry_type == "EARLY"
+        and market_regime == "neutral"
+        and btc_var_30m < 0
+        and late_entry_level != "HIGH"
+        and market_danger_level != "HIGH"
+        and rr_valid
+        and data_source != "SPOT_FALLBACK"
+    )
+
+    # Règle 1 confirmée : SHORT quand BTC ne baisse pas en 30m = très mauvais.
+    if direction == "SHORT" and btc_var_30m >= 0:
+        flag = "REJET"
+        confidence = min(confidence, 55)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = "short BTC 30m non negatif"
+        decision_explain = f"REJET v6.4.3 : SHORT bloqué car btc_variation_30m={btc_var_30m:+.2f}% >= 0."
+        signal_quality_bucket = "REJECT_SHORT_BTC30_POSITIVE"
+        telegram_rule_notes = "SHORT bloqué: BTC 30m non négatif"
+
+    # Règle 2 confirmée : SHORT MOMENTUM trop faible pour Telegram.
+    elif direction == "SHORT" and entry_type == "MOMENTUM":
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "short momentum non executable"
+        decision_explain = "WATCHLIST v6.4.3 : SHORT MOMENTUM non exécutable, conservé en diagnostic."
+        signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
+        telegram_rule_notes = "SHORT MOMENTUM bloqué Telegram"
+
+    # Règle 3 confirmée : LONG trend strong = souvent déjà lancé / tardif.
+    elif direction == "LONG" and trend_strength == "strong":
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong late review"
+        decision_explain = "WATCHLIST v6.4.3 : LONG trend strong forcé en review, risque de mouvement déjà lancé."
+        signal_quality_bucket = "WATCHLIST_LONG_STRONG_REVIEW"
+        telegram_rule_notes = "LONG trend strong non exécutable sans confirmation additionnelle"
+
+    # Règle 4 confirmée : score >=70 = late-entry review, pas Telegram auto.
+    elif global_score >= 70:
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score eleve late review"
+        decision_explain = f"WATCHLIST v6.4.3 : score élevé ({global_score:.1f}) traité en late-entry review, pas Telegram automatique."
+        signal_quality_bucket = "WATCHLIST_SCORE_HIGH_REVIEW"
+        telegram_rule_notes = "score >=70 bloqué Telegram"
+
+    # Règle 5 : nouvelle porte Telegram — LONG_PREMIUM mesuré en WATCHLIST_LOG.
+    elif is_long_premium:
+        flag = "CANDIDAT"
+        max_leverage = min(max_leverage, 3)
+        # On garde une confiance prudente : cette règle améliore le WR observé,
+        # mais ne transforme pas le setup en signal agressif.
+        confidence = max(58, min(confidence, 66))
+        decision_explain = (
+            f"CANDIDAT v6.4.3 LONG_PREMIUM : score {global_score:.1f}, "
+            f"volume {relative_vol:.2f}x, position_range {position_range:.3f}, "
+            f"regime BTC {market_regime}."
+        )
+        signal_quality_bucket = "LONG_PREMIUM"
+        telegram_rule_notes = "LONG premium: score 52-58, volume<1.5, PR<0.85"
+
+    # SHORT premium : bon pattern observé, mais échantillon encore trop petit → diagnostic.
+    elif is_short_premium_candidate:
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        decision_explain = "WATCHLIST_PREMIUM v6.4.3 : SHORT EARLY neutral + BTC 30m négatif, à confirmer avant Telegram."
+        signal_quality_bucket = "SHORT_PREMIUM_CANDIDATE"
+        telegram_rule_notes = "SHORT premium candidat en observation"
+
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
         confidence   = min(confidence, 60)
@@ -2717,7 +2828,9 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "crowded_risk": v61_decision.get("crowded_risk", False),
         "watchlist_promotion_candidate": v61_decision.get("watchlist_promotion_candidate", False),
         "signal_downgrade_candidate": v61_decision.get("signal_downgrade_candidate", False),
-        "final_decision_reason": v61_decision.get("final_decision_reason", decision_explain),
+        "final_decision_reason": decision_explain,
+        "signal_quality_bucket": signal_quality_bucket,
+        "telegram_rule_notes": telegram_rule_notes,
         "confidence_cap_reason": confidence_cap_reason,
         "leverage_cap_reason": leverage_cap_reason,
     }
@@ -3355,6 +3468,8 @@ def full_analysis():
                 f"watchlist_promotion_candidate: {r.get('watchlist_promotion_candidate')} | "
                 f"signal_downgrade_candidate: {r.get('signal_downgrade_candidate')} | "
                 f"final_decision_reason: {r.get('final_decision_reason')} | "
+                f"signal_quality_bucket: {r.get('signal_quality_bucket')} | "
+                f"telegram_rule_notes: {r.get('telegram_rule_notes')} | "
                 f"taker_buy_ratio: {r.get('v6_futures_raw',{}).get('taker_buy_ratio')} | "
                 f"taker_sell_ratio: {r.get('v6_futures_raw',{}).get('taker_sell_ratio')} | "
                 f"long_liq_usdt: {r.get('v6_futures_raw',{}).get('long_liq_usdt')} | "
@@ -4056,7 +4171,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.2.2",
+        "version": "6.4.3",
         "providers": results
     })
 
@@ -4065,7 +4180,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.2.2"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.3"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
