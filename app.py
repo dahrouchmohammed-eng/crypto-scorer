@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.3")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.3.1")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -2612,7 +2612,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     is_long_premium = (
         direction == "LONG"
         and 52 <= global_score < 58
-        and relative_vol is not None and relative_vol < 1.5
+        # v6.4.3.1 — filtre volume resserré après v36 :
+        # les LONG_PREMIUM avec volume trop faible (<0.30x) ont perdu,
+        # et la zone historique la plus robuste est volume 0.30–1.20.
+        and relative_vol is not None and 0.30 <= relative_vol < 1.20
         and position_range is not None and position_range < 0.85
         and market_regime in ("bullish", "neutral")
         and market_danger_level != "HIGH"
@@ -2639,7 +2642,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         confidence = min(confidence, 55)
         max_leverage = min(max_leverage, 3)
         risk_guard_reason = "short BTC 30m non negatif"
-        decision_explain = f"REJET v6.4.3 : SHORT bloqué car btc_variation_30m={btc_var_30m:+.2f}% >= 0."
+        decision_explain = f"REJET v6.4.3.1 : SHORT bloqué car btc_variation_30m={btc_var_30m:+.2f}% >= 0."
         signal_quality_bucket = "REJECT_SHORT_BTC30_POSITIVE"
         telegram_rule_notes = "SHORT bloqué: BTC 30m non négatif"
 
@@ -2650,7 +2653,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         confidence = min(confidence, 60)
         max_leverage = min(max_leverage, 3)
         risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "short momentum non executable"
-        decision_explain = "WATCHLIST v6.4.3 : SHORT MOMENTUM non exécutable, conservé en diagnostic."
+        decision_explain = "WATCHLIST v6.4.3.1 : SHORT MOMENTUM non exécutable, conservé en diagnostic."
         signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
         telegram_rule_notes = "SHORT MOMENTUM bloqué Telegram"
 
@@ -2661,7 +2664,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         confidence = min(confidence, 60)
         max_leverage = min(max_leverage, 3)
         risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong late review"
-        decision_explain = "WATCHLIST v6.4.3 : LONG trend strong forcé en review, risque de mouvement déjà lancé."
+        decision_explain = "WATCHLIST v6.4.3.1 : LONG trend strong forcé en review, risque de mouvement déjà lancé."
         signal_quality_bucket = "WATCHLIST_LONG_STRONG_REVIEW"
         telegram_rule_notes = "LONG trend strong non exécutable sans confirmation additionnelle"
 
@@ -2672,7 +2675,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         confidence = min(confidence, 60)
         max_leverage = min(max_leverage, 3)
         risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score eleve late review"
-        decision_explain = f"WATCHLIST v6.4.3 : score élevé ({global_score:.1f}) traité en late-entry review, pas Telegram automatique."
+        decision_explain = f"WATCHLIST v6.4.3.1 : score élevé ({global_score:.1f}) traité en late-entry review, pas Telegram automatique."
         signal_quality_bucket = "WATCHLIST_SCORE_HIGH_REVIEW"
         telegram_rule_notes = "score >=70 bloqué Telegram"
 
@@ -2684,12 +2687,12 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         # mais ne transforme pas le setup en signal agressif.
         confidence = max(58, min(confidence, 66))
         decision_explain = (
-            f"CANDIDAT v6.4.3 LONG_PREMIUM : score {global_score:.1f}, "
+            f"CANDIDAT v6.4.3.1 LONG_PREMIUM : score {global_score:.1f}, "
             f"volume {relative_vol:.2f}x, position_range {position_range:.3f}, "
             f"regime BTC {market_regime}."
         )
         signal_quality_bucket = "LONG_PREMIUM"
-        telegram_rule_notes = "LONG premium: score 52-58, volume<1.5, PR<0.85"
+        telegram_rule_notes = "LONG premium: score 52-58, volume 0.30-1.20, PR<0.85"
 
     # SHORT premium : bon pattern observé, mais échantillon encore trop petit → diagnostic.
     elif is_short_premium_candidate:
@@ -2697,9 +2700,26 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             flag = "WATCHLIST"
         confidence = min(confidence, 60)
         max_leverage = min(max_leverage, 3)
-        decision_explain = "WATCHLIST_PREMIUM v6.4.3 : SHORT EARLY neutral + BTC 30m négatif, à confirmer avant Telegram."
+        decision_explain = "WATCHLIST_PREMIUM v6.4.3.1.1 : SHORT EARLY neutral + BTC 30m négatif, à confirmer avant Telegram."
         signal_quality_bucket = "SHORT_PREMIUM_CANDIDATE"
         telegram_rule_notes = "SHORT premium candidat en observation"
+
+    # Règle 6 v6.4.3.1 : porte Telegram stricte.
+    # Après retour tracker v36 : certains CANDIDAT standards continuaient à partir
+    # en Telegram via l'ancien moteur. Désormais, aucun CANDIDAT ne reste exécutable
+    # s'il n'appartient pas explicitement au bucket premium validé.
+    if flag == "CANDIDAT" and signal_quality_bucket not in ("LONG_PREMIUM", "SHORT_PREMIUM"):
+        flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        if signal_quality_bucket == "STANDARD":
+            signal_quality_bucket = "WATCHLIST_NON_PREMIUM_CANDIDATE"
+        telegram_rule_notes = telegram_rule_notes or "CANDIDAT standard bloqué Telegram: bucket non premium"
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "telegram bucket non premium"
+        decision_explain = (
+            f"WATCHLIST v6.4.3.1 : CANDIDAT standard bloqué Telegram "
+            f"car bucket={signal_quality_bucket}, seuls LONG_PREMIUM/SHORT_PREMIUM autorisés."
+        )
 
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
     if flag == "WATCHLIST":
@@ -4171,7 +4191,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.3",
+        "version": "6.4.3.1",
         "providers": results
     })
 
@@ -4180,7 +4200,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.3"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.3.1"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
