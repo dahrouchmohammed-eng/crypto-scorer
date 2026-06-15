@@ -191,12 +191,52 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.3.1")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.4")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
 V61_PROMOTE_LONG_MAX_POSITION = float(os.environ.get("V61_PROMOTE_LONG_MAX_POSITION", "0.75"))
 V61_PROMOTE_SHORT_MIN_POSITION = float(os.environ.get("V61_PROMOTE_SHORT_MIN_POSITION", "0.25"))
+
+# ─── CONFIG V6.4.4 — BTC CONTEXT LAYER / BUCKET ENGINE ──────────────────────
+# Seuils externalisés pour recalibrage sans toucher à la logique métier.
+BTC_BULL_IMPULSE_VAR4H = float(os.environ.get("BTC_BULL_IMPULSE_VAR4H", "1.5"))
+BTC_BULL_IMPULSE_VAR2H = float(os.environ.get("BTC_BULL_IMPULSE_VAR2H", "0.5"))
+BTC_BULL_IMPULSE_RSI   = float(os.environ.get("BTC_BULL_IMPULSE_RSI", "60"))
+
+BTC_BULL_SOFT_VAR4H = float(os.environ.get("BTC_BULL_SOFT_VAR4H", "0.3"))
+BTC_BULL_SOFT_RSI   = float(os.environ.get("BTC_BULL_SOFT_RSI", "52"))
+
+BTC_SWITCH_VAR30M_MIN = float(os.environ.get("BTC_SWITCH_VAR30M_MIN", "-0.1"))
+BTC_SWITCH_VAR2H_MIN  = float(os.environ.get("BTC_SWITCH_VAR2H_MIN", "-0.2"))
+BTC_SWITCH_VAR4H_MIN  = float(os.environ.get("BTC_SWITCH_VAR4H_MIN", "-0.3"))
+BTC_SWITCH_RSI_MIN    = float(os.environ.get("BTC_SWITCH_RSI_MIN", "45"))
+BTC_SWITCH_PREV_VAR4H_MAX = float(os.environ.get("BTC_SWITCH_PREV_VAR4H_MAX", "-0.1"))
+
+BTC_BEAR_EXHAUSTION_VAR4H_MIN = float(os.environ.get("BTC_BEAR_EXHAUSTION_VAR4H_MIN", "-0.7"))
+BTC_BEAR_CONT_VAR4H_MAX = float(os.environ.get("BTC_BEAR_CONT_VAR4H_MAX", "-0.5"))
+BTC_BEAR_CONT_VAR2H_MAX = float(os.environ.get("BTC_BEAR_CONT_VAR2H_MAX", "-0.2"))
+
+LONG_PREMIUM_PR_BULL_IMPULSE = float(os.environ.get("LONG_PREMIUM_PR_BULL_IMPULSE", "0.80"))
+LONG_PREMIUM_PR_BULL_SOFT    = float(os.environ.get("LONG_PREMIUM_PR_BULL_SOFT", "0.70"))
+LONG_PREMIUM_PR_DEFAULT      = float(os.environ.get("LONG_PREMIUM_PR_DEFAULT", "0.65"))
+
+TELEGRAM_ALLOWED_BUCKETS = {"LONG_PREMIUM", "SHORT_PREMIUM"}
+
+WATCHLIST_BUCKET_PRIORITY = {
+    "LONG_EARLY_NEUTRAL_PREMIUM":          100,
+    "WATCHLIST_PREMIUM_SCORE_HIGH_EARLY":   95,
+    "WATCHLIST_PREMIUM_LONG_STRONG":         90,
+    "SHORT_PREMIUM_CANDIDATE":               85,
+    "WATCHLIST_SHORT_MOMENTUM_BEARISH":      80,
+    "WATCHLIST_SCORE_HIGH_REVIEW":           50,
+    "WATCHLIST_LONG_STRONG_REVIEW":          45,
+    "WATCHLIST_SHORT_MOMENTUM_BLOCKED":      20,
+    "WATCHLIST_NON_PREMIUM_CANDIDATE":       10,
+    "REJECT_SHORT_BTC30_POSITIVE":            5,
+    "REJECT_SHORT_MOMENTUM_BULLISH":          5,
+    "STANDARD":                               0,
+}
 
 # Paramètres API futures data
 OI_PERIOD   = "1h"   # granularité OI history
@@ -392,6 +432,8 @@ def log_signal(entry):
             "data_source": entry.get("data_source"),
             "source_quality": entry.get("source_quality"),
             "market_regime": entry.get("market_regime"),
+            "btc_market_state": entry.get("btc_market_state"),
+            "btc_market_state_reason": entry.get("btc_market_state_reason"),
             "futures_zone": entry.get("futures_zone"),
             "futures_overheated": entry.get("futures_overheated"),
             "taker_not_confirmed": entry.get("taker_not_confirmed"),
@@ -404,6 +446,8 @@ def log_signal(entry):
             "signal_downgrade_candidate": entry.get("signal_downgrade_candidate"),
             "final_decision_reason": entry.get("final_decision_reason"),
             "signal_quality_bucket": entry.get("signal_quality_bucket"),
+            "regime_rule_applied": entry.get("regime_rule_applied"),
+            "pr_threshold_used": entry.get("pr_threshold_used"),
             "telegram_rule_notes": entry.get("telegram_rule_notes"),
         }
         with _SIGNAL_LOG_LOCK:
@@ -479,6 +523,8 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "market_danger_level":  market_details.get("market_danger_level"),
         "market_danger_score":  market_details.get("market_danger_score"),
         "btc_note":             market_details.get("btc_note"),
+        "btc_market_state":     market_details.get("btc_market_state", "BTC_NEUTRAL_COMPRESS"),
+        "btc_market_state_reason": market_details.get("btc_market_state_reason", ""),
         "trend_strength":  r.get("trend_strength"),
         "rsi":             r.get("rsi"),
         "position_range":  r.get("position_range"),
@@ -533,6 +579,8 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "final_decision_reason": r.get("final_decision_reason", r.get("decision_explain", "")),
         # ── Champs sélection Telegram v6.4.3 ───────────────────────────────
         "signal_quality_bucket": r.get("signal_quality_bucket", "STANDARD"),
+        "regime_rule_applied": r.get("regime_rule_applied", "STANDARD_NO_CONTEXT_RULE"),
+        "pr_threshold_used": r.get("pr_threshold_used"),
         "telegram_rule_notes": r.get("telegram_rule_notes", ""),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
@@ -1208,6 +1256,77 @@ def compute_btc_micro_context(btc_klines_5m):
         return empty
 
 
+
+
+def compute_btc_market_state_details(market_details):
+    """
+    v6.4.4-final-clean — BTC context layer auditable.
+
+    Retourne (state, reason). Les seuils sont externalisés en constantes/env vars
+    pour recalibrage sans modifier la logique métier.
+    """
+    try:
+        regime = str(
+            market_details.get("market_regime_btc") or
+            market_details.get("market_regime") or
+            "unknown"
+        ).lower()
+        rsi     = float(market_details.get("btc_rsi") or 50)
+        var_30m = float(market_details.get("btc_variation_30m") or 0)
+        var_2h  = float(market_details.get("btc_variation_2h") or 0)
+        var_4h  = float(market_details.get("btc_variation_4h") or 0)
+    except Exception as exc:
+        return "BTC_NEUTRAL_COMPRESS", f"fallback neutral: invalid BTC context ({exc})"
+
+    if regime in ("bearish", "neutral"):
+        remontee_courte = var_30m > BTC_SWITCH_VAR30M_MIN and var_2h > BTC_SWITCH_VAR2H_MIN
+        remontee_4h = var_4h > BTC_SWITCH_VAR4H_MIN
+        rsi_non_bearish = rsi > BTC_SWITCH_RSI_MIN
+        bearish_precedent = var_4h < BTC_SWITCH_PREV_VAR4H_MAX
+
+        if remontee_4h and remontee_courte and rsi_non_bearish and (regime == "bearish" or bearish_precedent):
+            return (
+                "BTC_SWITCH_RISK",
+                f"{regime}: var4h={var_4h:+.2f}>{BTC_SWITCH_VAR4H_MIN}, "
+                f"var2h={var_2h:+.2f}>{BTC_SWITCH_VAR2H_MIN}, "
+                f"var30m={var_30m:+.2f}>{BTC_SWITCH_VAR30M_MIN}, rsi={rsi:.1f}>{BTC_SWITCH_RSI_MIN}"
+            )
+
+        if regime == "bearish" and var_4h > BTC_BEAR_EXHAUSTION_VAR4H_MIN and var_2h > var_4h * 0.5:
+            return (
+                "BTC_BEAR_EXHAUSTION",
+                f"bearish exhaustion: var4h={var_4h:+.2f}>{BTC_BEAR_EXHAUSTION_VAR4H_MIN}, "
+                f"var2h={var_2h:+.2f} > 0.5*var4h"
+            )
+
+    if var_4h > BTC_BULL_IMPULSE_VAR4H and rsi > BTC_BULL_IMPULSE_RSI and var_2h > BTC_BULL_IMPULSE_VAR2H:
+        return (
+            "BTC_BULL_IMPULSE",
+            f"bull impulse: var4h={var_4h:+.2f}>{BTC_BULL_IMPULSE_VAR4H}, "
+            f"var2h={var_2h:+.2f}>{BTC_BULL_IMPULSE_VAR2H}, rsi={rsi:.1f}>{BTC_BULL_IMPULSE_RSI}"
+        )
+
+    if regime == "bullish" or (var_4h > BTC_BULL_SOFT_VAR4H and rsi > BTC_BULL_SOFT_RSI):
+        return (
+            "BTC_BULL_SOFT",
+            f"bull soft: regime={regime} or var4h={var_4h:+.2f}>{BTC_BULL_SOFT_VAR4H} and rsi={rsi:.1f}>{BTC_BULL_SOFT_RSI}"
+        )
+
+    if regime == "bearish" and var_4h < BTC_BEAR_CONT_VAR4H_MAX and var_2h < BTC_BEAR_CONT_VAR2H_MAX and var_30m < 0:
+        return (
+            "BTC_BEAR_CONTINUATION",
+            f"bear continuation: var4h={var_4h:+.2f}<{BTC_BEAR_CONT_VAR4H_MAX}, "
+            f"var2h={var_2h:+.2f}<{BTC_BEAR_CONT_VAR2H_MAX}, var30m={var_30m:+.2f}<0"
+        )
+
+    return "BTC_NEUTRAL_COMPRESS", f"neutral compress: regime={regime}, var4h={var_4h:+.2f}, var2h={var_2h:+.2f}, var30m={var_30m:+.2f}, rsi={rsi:.1f}"
+
+
+def compute_btc_market_state(market_details):
+    """Compatibilité : retourne uniquement l'état BTC."""
+    state, _reason = compute_btc_market_state_details(market_details)
+    return state
+
 def detect_market_regime(btc_klines, return_details=False):
     """
     Régime BTC enrichi V4.7/V5.
@@ -1648,8 +1767,390 @@ def build_weakness_notes(r):
 # v4.7 : market_danger_score BTC enrichi
 # v5.0 : universe dynamique + préfiltre tradability
 
+def apply_contextual_bucket_engine(
+    *,
+    flag,
+    confidence,
+    max_leverage,
+    direction,
+    entry_type,
+    global_score,
+    trend_strength,
+    market_regime,
+    btc_market_state,
+    market_details,
+    relative_vol,
+    position_range,
+    market_danger_level,
+    late_entry_level,
+    rr_valid,
+    data_source,
+    hard_reject,
+    v6,
+    risk_guard_reason,
+    decision_explain,
+    taker_pts=0,
+    futures_support=0,
+):
+    # ── V6.4.4 — TELEGRAM BUCKET ENGINE ADAPTATIF ───────────────────────────
+    #
+    # Philosophie : chaque règle est conditionnée au btc_market_state.
+    # Le moteur doit performer dans tous les cycles de marché.
+    # Données de calibration : 1 652 trades résolus (v6.3.4 → v6.4.3.1).
+    #
+    # Changements vs v6.4.3.1 :
+    #   [R1] SHORT btc30m>=0 → REJET       : inchangée (valide tous régimes)
+    #   [R2] SHORT MOMENTUM → bloqué       : ADAPTATIF par btc_market_state
+    #   [R3] LONG trend=strong → WL        : ADAPTATIF + bucket PREMIUM en bullish
+    #   [R4] score>=70 → WL                : ADAPTATIF EARLY vs MOMENTUM
+    #   [R5a] LONG_EARLY_NEUTRAL_PREMIUM   : nouveau bucket 98% WR (56 trades)
+    #   [R5b] LONG_PREMIUM → Telegram      : PR conditionnelle au btc_market_state
+    #   [R5c] SHORT_PREMIUM_CANDIDATE      : élargi avec BTC_BEAR_CONTINUATION
+    #   [R6] Porte Telegram stricte        : inchangée
+
+    signal_quality_bucket = "STANDARD"
+    telegram_rule_notes = ""
+    regime_rule_applied = "STANDARD_NO_CONTEXT_RULE"
+    btc_var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
+    btc_var_2h  = _safe_float(market_details.get("btc_variation_2h"), 0.0)
+    btc_var_4h  = _safe_float(market_details.get("btc_variation_4h"), 0.0)
+
+    # Flags état BTC (calculé en amont dans compute_btc_market_state)
+    is_bull_impulse    = (btc_market_state == "BTC_BULL_IMPULSE")
+    is_bull_soft       = (btc_market_state in ("BTC_BULL_SOFT", "BTC_BULL_IMPULSE"))
+    is_bear_cont       = (btc_market_state == "BTC_BEAR_CONTINUATION")
+    is_switch_risk     = (btc_market_state == "BTC_SWITCH_RISK")
+    is_bear_exhaustion = (btc_market_state == "BTC_BEAR_EXHAUSTION")
+    is_neutral_comp    = (btc_market_state == "BTC_NEUTRAL_COMPRESS")
+
+    # PR adaptatif selon état BTC :
+    # BTC_BULL_IMPULSE : PR jusqu'à 0.80 (continuation justifiée)
+    # BTC_BULL_SOFT    : PR < 0.70 (zone saine confirmée par v40)
+    # neutral/autres   : PR < 0.65 (plus strict)
+    if is_bull_impulse:
+        pr_threshold_lp = LONG_PREMIUM_PR_BULL_IMPULSE
+    elif is_bull_soft:
+        pr_threshold_lp = LONG_PREMIUM_PR_BULL_SOFT
+    else:
+        pr_threshold_lp = LONG_PREMIUM_PR_DEFAULT
+    pr_threshold_used = pr_threshold_lp
+
+    # ── Bucket LONG_PREMIUM (Telegram) ───────────────────────────────────────
+    # Zone optimale v40 : score 52-58, vol 0.30-1.20, PR adaptatif
+    # WR : PR<0.70 = 64% · PR<0.65 = 73% · PR<0.60 = 76%
+    is_long_premium = (
+        flag != "REJET"                    # ne jamais annuler un vrai rejet dur
+        and not hard_reject
+        and v6.get("v6_accepted", True)
+        and flag != "REJET"
+        and not hard_reject
+        and v6.get("v6_accepted", True)
+        and direction == "LONG"
+        and 52 <= global_score < 58
+        and relative_vol is not None and 0.30 <= relative_vol < 1.20
+        and position_range is not None and position_range < pr_threshold_lp
+        and market_regime in ("bullish", "neutral")
+        and market_danger_level != "HIGH"
+        and trend_strength != "strong"
+        and late_entry_level != "HIGH"
+        and rr_valid
+        and data_source != "SPOT_FALLBACK"
+        and not is_switch_risk
+    )
+
+    # ── Bucket LONG_EARLY_NEUTRAL_PREMIUM (WATCHLIST_PREMIUM) ────────────────
+    # Découverte v39/v40 : LONG EARLY neutral = 98% WR (56 trades, 9 symboles)
+    # → WATCHLIST_PREMIUM pour accumulation, pas encore Telegram
+    is_long_early_neutral = (
+        direction == "LONG"
+        and entry_type == "EARLY"
+        and (is_neutral_comp or market_regime == "neutral")
+        and trend_strength in ("weak", "moderate")
+        and market_danger_level != "HIGH"
+        and rr_valid
+        and data_source != "SPOT_FALLBACK"
+    )
+
+    # ── Bucket SHORT_PREMIUM_CANDIDATE (WATCHLIST_PREMIUM) ───────────────────
+    # v40 : SHORT EARLY neutral btc30m<0 = 70% WR (20t) → WATCHLIST_PREMIUM
+    # Élargi : SHORT EARLY en BTC_BEAR_CONTINUATION (données historiques v6.3.4/6.3.6)
+    is_short_premium_candidate = (
+        direction == "SHORT"
+        and entry_type == "EARLY"
+        and btc_var_30m < 0
+        and late_entry_level != "HIGH"
+        and market_danger_level != "HIGH"
+        and rr_valid
+        and data_source != "SPOT_FALLBACK"
+        and (market_regime == "neutral" or is_bear_cont)
+    )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 1 — SHORT btc30m>=0 → REJET (inchangée, valide tous régimes)
+    # Données : neutral 14% (14t) · bearish 0% (22t) → justifiée partout
+    # ═══════════════════════════════════════════════════════════════════════
+    if direction == "SHORT" and btc_var_30m >= 0:
+        flag = "REJET"
+        confidence = min(confidence, 55)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = "short BTC 30m non negatif"
+        decision_explain = (
+            f"REJET v6.4.4 : SHORT bloqué btc_variation_30m={btc_var_30m:+.2f}% >= 0 "
+            f"(valide tous régimes : 0-14% WR observé)."
+        )
+        signal_quality_bucket = "REJECT_SHORT_BTC30_POSITIVE"
+        regime_rule_applied = "R1_SHORT_BTC30_POSITIVE_REJECT"
+        telegram_rule_notes = "SHORT bloqué: BTC 30m non négatif"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 2 — SHORT MOMENTUM — ADAPTATIF par btc_market_state
+    # BTC_BULL_SOFT/IMPULSE  : 0% WR → REJET contextuel
+    # BTC_NEUTRAL_COMPRESS   : 41% WR (125t) → WATCHLIST bloqué
+    # BTC_SWITCH_RISK        : danger → REJET contextuel
+    # BTC_BEAR_CONTINUATION  : 49-62% WR → WATCHLIST diagnostic (pas REJET)
+    # ═══════════════════════════════════════════════════════════════════════
+    elif direction == "SHORT" and entry_type == "MOMENTUM":
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "short momentum non executable"
+
+        if is_bull_soft or is_switch_risk:
+            # BTC haussier ou en transition : SHORT MOMENTUM = suicide
+            flag = "REJET"
+            confidence = min(confidence, 50)
+            decision_explain = (
+                f"REJET v6.4.4 : SHORT MOMENTUM en {btc_market_state} "
+                f"(0% WR historique en contexte BTC haussier)."
+            )
+            signal_quality_bucket = "REJECT_SHORT_MOMENTUM_BULLISH"
+            regime_rule_applied = "R2_SHORT_MOMENTUM_BULLISH_REJECT"
+            telegram_rule_notes = f"SHORT MOMENTUM rejeté: BTC état {btc_market_state}"
+        elif is_bear_cont:
+            # Bearish confirmé : 49-62% WR selon trend — conserver pour apprendre
+            decision_explain = (
+                f"WATCHLIST_DIAG v6.4.4 : SHORT MOMENTUM en BTC_BEAR_CONTINUATION "
+                f"(49-62% WR historique) — WATCHLIST diagnostic, pas Telegram."
+            )
+            signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BEARISH"
+            regime_rule_applied = "R2_SHORT_MOMENTUM_BEAR_CONT_DIAG"
+            telegram_rule_notes = "SHORT MOMENTUM bearish: diagnostic uniquement"
+        else:
+            # neutral/compress : 41% WR — bloquer Telegram
+            decision_explain = (
+                f"WATCHLIST v6.4.4 : SHORT MOMENTUM {market_regime} non exécutable "
+                f"(41% WR en neutral), conservé en diagnostic."
+            )
+            signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
+            regime_rule_applied = "R2_SHORT_MOMENTUM_BLOCKED"
+            telegram_rule_notes = f"SHORT MOMENTUM bloqué Telegram (régime {market_regime})"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 4 — score>=70 — ADAPTATIF EARLY vs MOMENTUM
+    # LONG bullish EARLY     : 74% WR (74t) → WATCHLIST_PREMIUM_SCORE_HIGH_EARLY
+    # LONG bullish MOMENTUM  : 44% WR (68t) → WATCHLIST_REVIEW (inchangé)
+    # LONG neutral EARLY     : 100% WR (7t, trop petit) → WATCHLIST_PREMIUM
+    # SHORT bearish          : 43% WR (7t) → WATCHLIST_REVIEW
+    # ═══════════════════════════════════════════════════════════════════════
+    elif global_score >= 70:
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 62)
+        max_leverage = min(max_leverage, 3)
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score eleve review"
+
+        if direction == "LONG" and entry_type == "EARLY" and is_bull_soft:
+            # 74% WR (74t) en bullish EARLY — meilleur bucket non exploité de v40
+            decision_explain = (
+                f"WATCHLIST_PREMIUM v6.4.4 : score élevé ({global_score:.1f}) "
+                f"mais LONG EARLY en {btc_market_state} (74% WR, 74 trades). "
+                "WATCHLIST_PREMIUM — confirmation avant Telegram."
+            )
+            signal_quality_bucket = "WATCHLIST_PREMIUM_SCORE_HIGH_EARLY"
+            regime_rule_applied = "R4_SCORE_HIGH_LONG_EARLY_PREMIUM"
+            telegram_rule_notes = f"score >=70 LONG EARLY {btc_market_state}: WATCHLIST_PREMIUM"
+        elif direction == "LONG" and entry_type == "EARLY" and is_neutral_comp:
+            # neutral EARLY : 100% WR mais 7 trades — trop petit, rester WATCHLIST_PREMIUM
+            decision_explain = (
+                f"WATCHLIST_PREMIUM v6.4.4 : score élevé ({global_score:.1f}) "
+                f"LONG EARLY neutral (100% WR, 7 trades — en accumulation)."
+            )
+            signal_quality_bucket = "WATCHLIST_PREMIUM_SCORE_HIGH_EARLY"
+            regime_rule_applied = "R4_SCORE_HIGH_LONG_EARLY_PREMIUM"
+            telegram_rule_notes = "score >=70 LONG EARLY neutral: WATCHLIST_PREMIUM"
+        else:
+            # MOMENTUM ou SHORT : WATCHLIST_REVIEW classique
+            decision_explain = (
+                f"WATCHLIST v6.4.4 : score élevé ({global_score:.1f}) "
+                f"({entry_type}, {market_regime}) — late-entry review."
+            )
+            signal_quality_bucket = "WATCHLIST_SCORE_HIGH_REVIEW"
+            regime_rule_applied = "R4_SCORE_HIGH_REVIEW"
+            telegram_rule_notes = "score >=70 bloqué Telegram"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 3 — LONG trend=strong — ADAPTATIF par btc_market_state
+    # bullish (tous états)  : 73% WR (56t) en v6.4.3.1 → WATCHLIST_PREMIUM
+    # neutral               : 44% WR (46t) → WATCHLIST_REVIEW (inchangé)
+    # bearish               : 58% WR (12t) → WATCHLIST_PREMIUM (observer)
+    # ═══════════════════════════════════════════════════════════════════════
+    elif direction == "LONG" and trend_strength == "strong":
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 62)
+        max_leverage = min(max_leverage, 3)
+
+        if is_bull_soft or market_regime == "bearish":
+            # bullish : 73% WR (56t) — promouvoir en WATCHLIST_PREMIUM
+            # bearish : 58% WR (12t) — rebond possible sur trend forte
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong watchlist premium"
+            decision_explain = (
+                f"WATCHLIST_PREMIUM v6.4.4 : LONG trend strong en {btc_market_state} "
+                f"({'73' if is_bull_soft else '58'}% WR historique). "
+                "Pas encore Telegram — accumulation en cours."
+            )
+            signal_quality_bucket = "WATCHLIST_PREMIUM_LONG_STRONG"
+            regime_rule_applied = "R3_LONG_STRONG_PREMIUM"
+            telegram_rule_notes = "LONG strong: WATCHLIST_PREMIUM en observation"
+        else:
+            # neutral : 44% WR — review justifié
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong late review"
+            decision_explain = (
+                f"WATCHLIST v6.4.4 : LONG trend strong en {market_regime} "
+                f"(44% WR) — risque entrée tardive."
+            )
+            signal_quality_bucket = "WATCHLIST_LONG_STRONG_REVIEW"
+            regime_rule_applied = "R3_LONG_STRONG_REVIEW"
+            telegram_rule_notes = "LONG trend strong non exécutable sans confirmation"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 5a — LONG_EARLY_NEUTRAL_PREMIUM (nouveau v6.4.4)
+    # 98% WR (56 trades, 9 symboles, 3 versions) → WATCHLIST_PREMIUM
+    # Pas encore Telegram : attendre 50+ trades supplémentaires
+    # ═══════════════════════════════════════════════════════════════════════
+    elif is_long_early_neutral:
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 65)
+        max_leverage = min(max_leverage, 3)
+        decision_explain = (
+            f"WATCHLIST_PREMIUM v6.4.4 : LONG EARLY neutral "
+            f"(98% WR, 56 trades, 9 symboles) — confirmation avant Telegram."
+        )
+        signal_quality_bucket = "LONG_EARLY_NEUTRAL_PREMIUM"
+        regime_rule_applied = "R5A_LONG_EARLY_NEUTRAL_PREMIUM"
+        telegram_rule_notes = "LONG EARLY neutral: WATCHLIST_PREMIUM 98% WR — confirmation en cours"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 5b — LONG_PREMIUM Telegram (adaptée v6.4.4)
+    # PR conditionnelle au btc_market_state :
+    # BULL_IMPULSE : PR < 0.80 · BULL_SOFT : PR < 0.70 · autres : PR < 0.65
+    # ═══════════════════════════════════════════════════════════════════════
+    elif is_long_premium:
+        flag = "CANDIDAT"
+        max_leverage = min(max_leverage, 3)
+        confidence = max(58, min(confidence, 66))
+        decision_explain = (
+            f"CANDIDAT v6.4.4 LONG_PREMIUM : score {global_score:.1f}, "
+            f"volume {relative_vol:.2f}x, position_range {position_range:.3f}, "
+            f"regime {market_regime} / {btc_market_state} / PR_seuil={pr_threshold_lp:.2f}."
+        )
+        signal_quality_bucket = "LONG_PREMIUM"
+        if is_bull_impulse:
+            regime_rule_applied = "R5B_LONG_PREMIUM_BULL_IMPULSE"
+        elif is_bull_soft:
+            regime_rule_applied = "R5B_LONG_PREMIUM_BULL_SOFT"
+        else:
+            regime_rule_applied = "R5B_LONG_PREMIUM_NEUTRAL"
+        telegram_rule_notes = (
+            f"LONG premium: score 52-58, vol 0.30-1.20, PR<{pr_threshold_lp:.2f} "
+            f"({btc_market_state})"
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 5c — SHORT_PREMIUM_CANDIDATE (WATCHLIST_PREMIUM élargi v6.4.4)
+    # SHORT EARLY neutral btc30m<0 : 70% WR (20t)
+    # SHORT EARLY BTC_BEAR_CONTINUATION : données historiques v6.3.4/6.3.6
+    # → WATCHLIST_PREMIUM, pas encore Telegram
+    # ═══════════════════════════════════════════════════════════════════════
+    elif is_short_premium_candidate:
+        if flag == "CANDIDAT":
+            flag = "WATCHLIST"
+        confidence = min(confidence, 62)
+        max_leverage = min(max_leverage, 3)
+        context = "bearish confirmé" if is_bear_cont else "neutral btc30m<0"
+        decision_explain = (
+            f"WATCHLIST_PREMIUM v6.4.4 : SHORT EARLY {context} + BTC 30m négatif "
+            f"(70% WR, 20 trades) — confirmation avant Telegram."
+        )
+        signal_quality_bucket = "SHORT_PREMIUM_CANDIDATE"
+        regime_rule_applied = "R5C_SHORT_EARLY_PREMIUM_CANDIDATE"
+        telegram_rule_notes = f"SHORT EARLY {context}: WATCHLIST_PREMIUM 70% WR"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # RÈGLE 6 — Porte Telegram stricte (inchangée v6.4.3.1)
+    # Seuls LONG_PREMIUM et SHORT_PREMIUM peuvent rester CANDIDAT
+    # ═══════════════════════════════════════════════════════════════════════
+    if flag == "CANDIDAT" and signal_quality_bucket not in TELEGRAM_ALLOWED_BUCKETS:
+        flag = "WATCHLIST"
+        confidence = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+        if signal_quality_bucket == "STANDARD":
+            signal_quality_bucket = "WATCHLIST_NON_PREMIUM_CANDIDATE"
+            regime_rule_applied = "R6_NON_PREMIUM_CANDIDATE_BLOCKED"
+        telegram_rule_notes = telegram_rule_notes or "CANDIDAT standard bloqué Telegram: bucket non premium"
+        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "telegram bucket non premium"
+        decision_explain = (
+            f"WATCHLIST v6.4.4 : CANDIDAT standard bloqué Telegram "
+            f"car bucket={signal_quality_bucket}, seuls LONG_PREMIUM/SHORT_PREMIUM autorisés."
+        )
+
+    # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
+    if flag == "WATCHLIST":
+        confidence   = min(confidence, 60)
+        max_leverage = min(max_leverage, 3)
+    elif flag == "SHORT_WATCH":
+        confidence   = min(confidence, 55)
+        max_leverage = min(max_leverage, 1)
+    elif flag == "REJET":
+        confidence   = min(confidence, 55)
+        max_leverage = min(max_leverage, 3)
+
+    executable_signal = (flag == "CANDIDAT")
+
+    # ── Harmonisation finale decision_explain / flag ──────────────────────────
+    # Évite les incohérences "WATCHLIST : ..." dans un signal REJET et vice-versa
+    if flag == "REJET" and decision_explain.startswith("WATCHLIST"):
+        decision_explain = f"REJET : {risk_guard_reason}."
+    elif flag == "WATCHLIST" and decision_explain.startswith("REJET"):
+        decision_explain = f"WATCHLIST : {risk_guard_reason}."
+
+    if not decision_explain:
+        if flag == "CANDIDAT":
+            decision_explain = f"CANDIDAT : taker {taker_pts:+d}, futures_support {futures_support}/4, volume {relative_vol:.2f}x."
+        elif flag == "WATCHLIST":
+            decision_explain = "WATCHLIST : signal technique sans confirmation futures suffisante."
+        else:
+            decision_explain = "REJET : score ou regles de garde."
+
+
+    return {
+        "flag": flag,
+        "confidence": confidence,
+        "max_leverage": max_leverage,
+        "signal_quality_bucket": signal_quality_bucket,
+        "telegram_rule_notes": telegram_rule_notes,
+        "regime_rule_applied": regime_rule_applied,
+        "pr_threshold_used": pr_threshold_used,
+        "decision_explain": decision_explain,
+        "risk_guard_reason": risk_guard_reason,
+        "executable_signal": executable_signal,
+    }
+
 def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_details=None):
     market_details = market_details or {}
+    btc_market_state = market_details.get("btc_market_state", "BTC_NEUTRAL_COMPRESS")
     klines, data_source = get_klines(symbol, limit=200)
     if not klines or len(klines) < 55:
         return None
@@ -2597,157 +3098,41 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
 
-    # ── V6.4.3 — TELEGRAM BUCKET ENGINE ─────────────────────────────────────
-    # Objectif : ne plus sélectionner Telegram par score brut, mais par patterns
-    # observés dans WATCHLIST_LOG v6.4.2.2 (~395 trades résolus).
-    # Cette couche intervient APRÈS le decision_engine v6.1 et AVANT les caps
-    # finaux afin de pouvoir :
-    #   - promouvoir uniquement les LONG_PREMIUM mesurés comme robustes ;
-    #   - bloquer les SHORT dangereux côté Telegram ;
-    #   - conserver les cas intéressants en WATCHLIST diagnostic.
-    signal_quality_bucket = "STANDARD"
-    telegram_rule_notes = ""
-    btc_var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
-
-    is_long_premium = (
-        direction == "LONG"
-        and 52 <= global_score < 58
-        # v6.4.3.1 — filtre volume resserré après v36 :
-        # les LONG_PREMIUM avec volume trop faible (<0.30x) ont perdu,
-        # et la zone historique la plus robuste est volume 0.30–1.20.
-        and relative_vol is not None and 0.30 <= relative_vol < 1.20
-        and position_range is not None and position_range < 0.85
-        and market_regime in ("bullish", "neutral")
-        and market_danger_level != "HIGH"
-        and trend_strength != "strong"
-        and late_entry_level != "HIGH"
-        and rr_valid
-        and data_source != "SPOT_FALLBACK"
+    # ── V6.4.4-final-clean — TELEGRAM BUCKET ENGINE ADAPTATIF ───────────────
+    bucket_decision = apply_contextual_bucket_engine(
+        flag=flag,
+        confidence=confidence,
+        max_leverage=max_leverage,
+        direction=direction,
+        entry_type=entry_type,
+        global_score=global_score,
+        trend_strength=trend_strength,
+        market_regime=market_regime,
+        btc_market_state=btc_market_state,
+        market_details=market_details,
+        relative_vol=relative_vol,
+        position_range=position_range,
+        market_danger_level=market_danger_level,
+        late_entry_level=late_entry_level,
+        rr_valid=rr_valid,
+        data_source=data_source,
+        hard_reject=hard_reject,
+        v6=v6,
+        risk_guard_reason=risk_guard_reason,
+        decision_explain=decision_explain,
+        taker_pts=taker_pts,
+        futures_support=futures_support,
     )
-
-    is_short_premium_candidate = (
-        direction == "SHORT"
-        and entry_type == "EARLY"
-        and market_regime == "neutral"
-        and btc_var_30m < 0
-        and late_entry_level != "HIGH"
-        and market_danger_level != "HIGH"
-        and rr_valid
-        and data_source != "SPOT_FALLBACK"
-    )
-
-    # Règle 1 confirmée : SHORT quand BTC ne baisse pas en 30m = très mauvais.
-    if direction == "SHORT" and btc_var_30m >= 0:
-        flag = "REJET"
-        confidence = min(confidence, 55)
-        max_leverage = min(max_leverage, 3)
-        risk_guard_reason = "short BTC 30m non negatif"
-        decision_explain = f"REJET v6.4.3.1 : SHORT bloqué car btc_variation_30m={btc_var_30m:+.2f}% >= 0."
-        signal_quality_bucket = "REJECT_SHORT_BTC30_POSITIVE"
-        telegram_rule_notes = "SHORT bloqué: BTC 30m non négatif"
-
-    # Règle 2 confirmée : SHORT MOMENTUM trop faible pour Telegram.
-    elif direction == "SHORT" and entry_type == "MOMENTUM":
-        if flag == "CANDIDAT":
-            flag = "WATCHLIST"
-        confidence = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "short momentum non executable"
-        decision_explain = "WATCHLIST v6.4.3.1 : SHORT MOMENTUM non exécutable, conservé en diagnostic."
-        signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
-        telegram_rule_notes = "SHORT MOMENTUM bloqué Telegram"
-
-    # Règle 3 confirmée : LONG trend strong = souvent déjà lancé / tardif.
-    elif direction == "LONG" and trend_strength == "strong":
-        if flag == "CANDIDAT":
-            flag = "WATCHLIST"
-        confidence = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong late review"
-        decision_explain = "WATCHLIST v6.4.3.1 : LONG trend strong forcé en review, risque de mouvement déjà lancé."
-        signal_quality_bucket = "WATCHLIST_LONG_STRONG_REVIEW"
-        telegram_rule_notes = "LONG trend strong non exécutable sans confirmation additionnelle"
-
-    # Règle 4 confirmée : score >=70 = late-entry review, pas Telegram auto.
-    elif global_score >= 70:
-        if flag == "CANDIDAT":
-            flag = "WATCHLIST"
-        confidence = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "score eleve late review"
-        decision_explain = f"WATCHLIST v6.4.3.1 : score élevé ({global_score:.1f}) traité en late-entry review, pas Telegram automatique."
-        signal_quality_bucket = "WATCHLIST_SCORE_HIGH_REVIEW"
-        telegram_rule_notes = "score >=70 bloqué Telegram"
-
-    # Règle 5 : nouvelle porte Telegram — LONG_PREMIUM mesuré en WATCHLIST_LOG.
-    elif is_long_premium:
-        flag = "CANDIDAT"
-        max_leverage = min(max_leverage, 3)
-        # On garde une confiance prudente : cette règle améliore le WR observé,
-        # mais ne transforme pas le setup en signal agressif.
-        confidence = max(58, min(confidence, 66))
-        decision_explain = (
-            f"CANDIDAT v6.4.3.1 LONG_PREMIUM : score {global_score:.1f}, "
-            f"volume {relative_vol:.2f}x, position_range {position_range:.3f}, "
-            f"regime BTC {market_regime}."
-        )
-        signal_quality_bucket = "LONG_PREMIUM"
-        telegram_rule_notes = "LONG premium: score 52-58, volume 0.30-1.20, PR<0.85"
-
-    # SHORT premium : bon pattern observé, mais échantillon encore trop petit → diagnostic.
-    elif is_short_premium_candidate:
-        if flag == "CANDIDAT":
-            flag = "WATCHLIST"
-        confidence = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-        decision_explain = "WATCHLIST_PREMIUM v6.4.3.1.1 : SHORT EARLY neutral + BTC 30m négatif, à confirmer avant Telegram."
-        signal_quality_bucket = "SHORT_PREMIUM_CANDIDATE"
-        telegram_rule_notes = "SHORT premium candidat en observation"
-
-    # Règle 6 v6.4.3.1 : porte Telegram stricte.
-    # Après retour tracker v36 : certains CANDIDAT standards continuaient à partir
-    # en Telegram via l'ancien moteur. Désormais, aucun CANDIDAT ne reste exécutable
-    # s'il n'appartient pas explicitement au bucket premium validé.
-    if flag == "CANDIDAT" and signal_quality_bucket not in ("LONG_PREMIUM", "SHORT_PREMIUM"):
-        flag = "WATCHLIST"
-        confidence = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-        if signal_quality_bucket == "STANDARD":
-            signal_quality_bucket = "WATCHLIST_NON_PREMIUM_CANDIDATE"
-        telegram_rule_notes = telegram_rule_notes or "CANDIDAT standard bloqué Telegram: bucket non premium"
-        risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "telegram bucket non premium"
-        decision_explain = (
-            f"WATCHLIST v6.4.3.1 : CANDIDAT standard bloqué Telegram "
-            f"car bucket={signal_quality_bucket}, seuls LONG_PREMIUM/SHORT_PREMIUM autorisés."
-        )
-
-    # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
-    if flag == "WATCHLIST":
-        confidence   = min(confidence, 60)
-        max_leverage = min(max_leverage, 3)
-    elif flag == "SHORT_WATCH":
-        confidence   = min(confidence, 55)
-        max_leverage = min(max_leverage, 1)
-    elif flag == "REJET":
-        confidence   = min(confidence, 55)
-        max_leverage = min(max_leverage, 3)
-
-    executable_signal = (flag == "CANDIDAT")
-
-    # ── Harmonisation finale decision_explain / flag ──────────────────────────
-    # Évite les incohérences "WATCHLIST : ..." dans un signal REJET et vice-versa
-    if flag == "REJET" and decision_explain.startswith("WATCHLIST"):
-        decision_explain = f"REJET : {risk_guard_reason}."
-    elif flag == "WATCHLIST" and decision_explain.startswith("REJET"):
-        decision_explain = f"WATCHLIST : {risk_guard_reason}."
-
-    if not decision_explain:
-        if flag == "CANDIDAT":
-            decision_explain = f"CANDIDAT : taker {taker_pts:+d}, futures_support {futures_support}/4, volume {relative_vol:.2f}x."
-        elif flag == "WATCHLIST":
-            decision_explain = "WATCHLIST : signal technique sans confirmation futures suffisante."
-        else:
-            decision_explain = "REJET : score ou regles de garde."
+    flag = bucket_decision["flag"]
+    confidence = bucket_decision["confidence"]
+    max_leverage = bucket_decision["max_leverage"]
+    signal_quality_bucket = bucket_decision["signal_quality_bucket"]
+    telegram_rule_notes = bucket_decision["telegram_rule_notes"]
+    regime_rule_applied = bucket_decision["regime_rule_applied"]
+    pr_threshold_used = bucket_decision["pr_threshold_used"]
+    decision_explain = bucket_decision["decision_explain"]
+    risk_guard_reason = bucket_decision["risk_guard_reason"]
+    executable_signal = bucket_decision["executable_signal"]
 
     # Duree estimee calculee par Python
     if trend_strength == "strong":
@@ -2850,6 +3235,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "signal_downgrade_candidate": v61_decision.get("signal_downgrade_candidate", False),
         "final_decision_reason": decision_explain,
         "signal_quality_bucket": signal_quality_bucket,
+        "regime_rule_applied": regime_rule_applied,
+        "pr_threshold_used": pr_threshold_used,
+        "btc_market_state":     btc_market_state,
+        "btc_market_state_reason": market_details.get("btc_market_state_reason", ""),
         "telegram_rule_notes": telegram_rule_notes,
         "confidence_cap_reason": confidence_cap_reason,
         "leverage_cap_reason": leverage_cap_reason,
@@ -3007,6 +3396,40 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
         "final_decision_reason": final_decision_reason,
     }
 
+
+def validate_decision_config():
+    """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
+    warnings = []
+    if DECISION_VERSION != "v6.4.4":
+        warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
+    if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
+        warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
+    if not (BTC_BEAR_CONT_VAR4H_MAX < 0 and BTC_BEAR_CONT_VAR2H_MAX < 0):
+        warnings.append("Seuils BTC_BEAR_CONT doivent être négatifs")
+    if "LONG_PREMIUM" not in TELEGRAM_ALLOWED_BUCKETS:
+        warnings.append("LONG_PREMIUM doit rester autorisé Telegram")
+    for bucket in (
+        "LONG_EARLY_NEUTRAL_PREMIUM",
+        "WATCHLIST_PREMIUM_SCORE_HIGH_EARLY",
+        "WATCHLIST_PREMIUM_LONG_STRONG",
+        "SHORT_PREMIUM_CANDIDATE",
+        "WATCHLIST_SHORT_MOMENTUM_BEARISH",
+    ):
+        if bucket not in WATCHLIST_BUCKET_PRIORITY:
+            warnings.append(f"{bucket} absent de WATCHLIST_BUCKET_PRIORITY")
+    extra_telegram = TELEGRAM_ALLOWED_BUCKETS - {"LONG_PREMIUM", "SHORT_PREMIUM"}
+    if extra_telegram:
+        warnings.append(f"Buckets Telegram non prévus: {sorted(extra_telegram)}")
+
+    if warnings:
+        for w in warnings:
+            logger.warning("validate_decision_config: %s", w)
+    else:
+        logger.info("validate_decision_config OK — %s", DECISION_VERSION)
+    return warnings
+
+validate_decision_config()
+
 # ─── ENDPOINT /set_cooldown ───────────────────────────────────────────────────
 
 @app.route("/set_cooldown", methods=["POST"])
@@ -3153,6 +3576,10 @@ def full_analysis():
 
         btc_klines_5m, btc_5m_data_source = get_klines("BTCUSDT", interval="5m", limit=200)
         market_details.update(compute_btc_micro_context(btc_klines_5m))
+        market_details["market_regime_btc"] = market_regime
+        btc_market_state, btc_market_state_reason = compute_btc_market_state_details(market_details)
+        market_details["btc_market_state"] = btc_market_state
+        market_details["btc_market_state_reason"] = btc_market_state_reason
 
         # ── PRESCORE v5 : tradability avant momentum brut ───────────────────
         scored = []
@@ -3375,9 +3802,18 @@ def full_analysis():
         # WATCHLIST_LOG / REJECT_LOG.
         emitted_ts = int(time.time())
 
+        # v6.4.4 — Tri top_watchlist par priorité bucket d'abord, puis score.
+        # Les WATCHLIST_PREMIUM doivent apparaître en tête même à score modéré,
+        # sinon les nouveaux buckets (LONG_EARLY_NEUTRAL_PREMIUM 98% WR, etc.)
+        # disparaissent derrière des STANDARD à score plus élevé.
+        # v6.4.4-final-clean — priorité bucket globale validée par validate_decision_config().
         _all_watchlist = sorted(
             [r for r in results if r.get("flag") == "WATCHLIST"],
-            key=lambda x: x.get("score", 0), reverse=True
+            key=lambda x: (
+                WATCHLIST_BUCKET_PRIORITY.get(x.get("signal_quality_bucket", "STANDARD"), 0),
+                x.get("score", 0)
+            ),
+            reverse=True
         )
         _all_rejected = sorted(
             [r for r in results if r.get("flag") == "REJET"],
@@ -3431,7 +3867,7 @@ def full_analysis():
             fallback_note = "\n🔴 MODE SHORT_WATCH : momentum potentiellement épuisé. Observation uniquement, pas de short automatique.\n"
 
         lines = [
-            f"market_regime_btc: {market_regime}\n"
+            f"market_regime_btc: {market_regime} | btc_market_state: {market_details.get('btc_market_state', 'BTC_NEUTRAL_COMPRESS')}\n"
             f"market_danger_level: {market_details.get('market_danger_level')} | "
             f"market_danger_score: {market_details.get('market_danger_score')} | "
             f"btc_rsi: {market_details.get('btc_rsi')} | "
@@ -3489,6 +3925,10 @@ def full_analysis():
                 f"signal_downgrade_candidate: {r.get('signal_downgrade_candidate')} | "
                 f"final_decision_reason: {r.get('final_decision_reason')} | "
                 f"signal_quality_bucket: {r.get('signal_quality_bucket')} | "
+                f"btc_market_state: {r.get('btc_market_state', 'BTC_NEUTRAL_COMPRESS')} | "
+                f"btc_market_state_reason: {r.get('btc_market_state_reason', '')} | "
+                f"regime_rule_applied: {r.get('regime_rule_applied')} | "
+                f"pr_threshold_used: {r.get('pr_threshold_used')} | "
                 f"telegram_rule_notes: {r.get('telegram_rule_notes')} | "
                 f"taker_buy_ratio: {r.get('v6_futures_raw',{}).get('taker_buy_ratio')} | "
                 f"taker_sell_ratio: {r.get('v6_futures_raw',{}).get('taker_sell_ratio')} | "
@@ -4191,7 +4631,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.3.1",
+        "version": "6.4.4",
         "providers": results
     })
 
@@ -4200,7 +4640,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.3.1"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.4"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
