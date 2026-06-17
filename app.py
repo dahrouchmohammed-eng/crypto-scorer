@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.4.4")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.0")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -449,6 +449,25 @@ def log_signal(entry):
             "regime_rule_applied": entry.get("regime_rule_applied"),
             "pr_threshold_used": entry.get("pr_threshold_used"),
             "telegram_rule_notes": entry.get("telegram_rule_notes"),
+            # ── v6.5.0 — audit complet contexte / setup / participation / RR ──
+            "btc_phase": entry.get("btc_phase"),
+            "btc_context_bias": entry.get("btc_context_bias"),
+            "btc_market_state": entry.get("btc_market_state"),
+            "setup_family": entry.get("setup_family"),
+            "setup_context_alignment": entry.get("setup_context_alignment"),
+            "setup_maturity": entry.get("setup_maturity"),
+            "volume_regime": entry.get("volume_regime"),
+            "volume_quality": entry.get("volume_quality"),
+            "volume_context": entry.get("volume_context"),
+            "derivatives_alignment": entry.get("derivatives_alignment"),
+            "crowding_state": entry.get("crowding_state"),
+            "participation_score": entry.get("participation_score"),
+            "participation_warning": entry.get("participation_warning"),
+            "rr_tp1": entry.get("rr_tp1"),
+            "rr_tp2": entry.get("rr_tp2"),
+            "rr_tp3": entry.get("rr_tp3"),
+            "rr_tp4": entry.get("rr_tp4"),
+            "rr_tp5": entry.get("rr_tp5"),
         }
         with _SIGNAL_LOG_LOCK:
             with open(SIGNAL_LOG_FILE, "a") as f:
@@ -508,6 +527,11 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "risk_reward_tp2":    r.get("risk_reward_tp2"),
         "risk_reward_target": r.get("risk_reward_target"),
         "target_rr":          r.get("target_rr"),
+        "rr_tp1":             r.get("rr_tp1"),
+        "rr_tp2":             r.get("rr_tp2"),
+        "rr_tp3":             r.get("rr_tp3"),
+        "rr_tp4":             r.get("rr_tp4"),
+        "rr_tp5":             r.get("rr_tp5"),
         "flag":            r.get("flag"),
         "source_quality":  src_quality,
         "data_source":     r.get("data_source", data_source_run),
@@ -525,9 +549,40 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "btc_note":             market_details.get("btc_note"),
         "btc_market_state":     market_details.get("btc_market_state", "BTC_NEUTRAL_COMPRESS"),
         "btc_market_state_reason": market_details.get("btc_market_state_reason", ""),
+        "btc_context_bias": market_details.get("btc_context_bias"),
+        "btc_phase": market_details.get("btc_phase"),
+        "btc_trend_slope_2h": market_details.get("btc_trend_slope_2h"),
+        "btc_trend_slope_4h": market_details.get("btc_trend_slope_4h"),
+        "btc_trend_slope_12h": market_details.get("btc_trend_slope_12h"),
+        "btc_impulse_age": market_details.get("btc_impulse_age"),
+        "btc_pullback_depth": market_details.get("btc_pullback_depth"),
+        "btc_range_position": market_details.get("btc_range_position"),
+        "btc_rejection_state": market_details.get("btc_rejection_state"),
+        "btc_support_distance_pct": market_details.get("btc_support_distance_pct"),
+        "btc_resistance_distance_pct": market_details.get("btc_resistance_distance_pct"),
+        "btc_volatility_regime": market_details.get("btc_volatility_regime"),
+        "btc_context_score": market_details.get("btc_context_score"),
         "trend_strength":  r.get("trend_strength"),
         "rsi":             r.get("rsi"),
         "position_range":  r.get("position_range"),
+        # ── Champs setup / participation v6.5.0 ─────────────────────────────
+        "setup_family": r.get("setup_family"),
+        "setup_variant": r.get("setup_variant"),
+        "setup_maturity": r.get("setup_maturity"),
+        "setup_directional_quality": r.get("setup_directional_quality"),
+        "setup_context_alignment": r.get("setup_context_alignment"),
+        "setup_late_risk_label": r.get("setup_late_risk_label"),
+        "volume_regime": r.get("volume_regime"),
+        "volume_quality": r.get("volume_quality"),
+        "volume_context": r.get("volume_context"),
+        "volume_vs_move": r.get("volume_vs_move"),
+        "oi_regime": r.get("oi_regime"),
+        "taker_regime": r.get("taker_regime"),
+        "funding_regime": r.get("funding_regime"),
+        "crowding_state": r.get("crowding_state"),
+        "derivatives_alignment": r.get("derivatives_alignment"),
+        "participation_score": r.get("participation_score"),
+        "participation_warning": r.get("participation_warning"),
         # ── Champs qualité signal v6.0.6 ────────────────────────────────────
         "prescore":           r.get("prescore"),
         "volume_relatif":     r.get("volume_relatif"),
@@ -1326,6 +1381,383 @@ def compute_btc_market_state(market_details):
     """Compatibilité : retourne uniquement l'état BTC."""
     state, _reason = compute_btc_market_state_details(market_details)
     return state
+
+
+def compute_btc_context_v65(btc_klines_1h, market_details):
+    """
+    v6.5.0 — Market Context Engine (instrumentation only).
+    Enrichit le contexte BTC sans modifier directement les décisions Telegram.
+    Objectif : distinguer neutral accumulation / after bear / after bull,
+    qualifier pente, pullback, rejet, range et volatilité.
+    """
+    market_details = market_details or {}
+    out = {
+        "btc_context_bias": "uncertain",
+        "btc_phase": "BTC_UNCLEAR",
+        "btc_trend_slope_2h": market_details.get("btc_variation_2h", 0),
+        "btc_trend_slope_4h": market_details.get("btc_variation_4h", 0),
+        "btc_trend_slope_12h": market_details.get("btc_variation_12h", 0),
+        "btc_impulse_age": 0,
+        "btc_pullback_depth": 0,
+        "btc_range_position": 0.5,
+        "btc_rejection_state": "none",
+        "btc_support_distance_pct": None,
+        "btc_resistance_distance_pct": None,
+        "btc_volatility_regime": "unknown",
+        "btc_context_score": 0,
+    }
+    try:
+        if not btc_klines_1h or len(btc_klines_1h) < 30:
+            return out
+
+        closes = [float(k[4]) for k in btc_klines_1h]
+        highs = [float(k[2]) for k in btc_klines_1h]
+        lows = [float(k[3]) for k in btc_klines_1h]
+        current = closes[-1]
+        if current <= 0:
+            return out
+
+        var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
+        var_2h = _safe_float(market_details.get("btc_variation_2h"), 0.0)
+        var_4h = _safe_float(market_details.get("btc_variation_4h"), 0.0)
+        var_12h = _safe_float(market_details.get("btc_variation_12h"), 0.0)
+        atr_pct = _safe_float(market_details.get("btc_atr_pct"), 0.0)
+        base_state = str(market_details.get("btc_market_state", "BTC_NEUTRAL_COMPRESS"))
+
+        lookback = min(len(closes), 72)
+        recent_high = max(highs[-lookback:])
+        recent_low = min(lows[-lookback:])
+        range_span = recent_high - recent_low
+        range_pos = round((current - recent_low) / range_span, 3) if range_span > 0 else 0.5
+
+        support_distance = round((current - recent_low) / current * 100, 2) if current > 0 else None
+        resistance_distance = round((recent_high - current) / current * 100, 2) if current > 0 else None
+
+        impulse_age = 0
+        dominant_sign = 1 if var_4h > 0 else (-1 if var_4h < 0 else 0)
+        if dominant_sign != 0:
+            for i in range(len(closes) - 1, 0, -1):
+                delta = closes[i] - closes[i - 1]
+                if (delta > 0 and dominant_sign > 0) or (delta < 0 and dominant_sign < 0):
+                    impulse_age += 1
+                else:
+                    break
+
+        if var_4h >= 0:
+            pullback_depth = round((recent_high - current) / recent_high * 100, 2) if recent_high > 0 else 0
+        else:
+            pullback_depth = round((current - recent_low) / recent_low * 100, 2) if recent_low > 0 else 0
+
+        rejection_state = "none"
+        for k in btc_klines_1h[-3:]:
+            o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+            rng = max(h - l, 1e-12)
+            upper_wick = h - max(o, c)
+            lower_wick = min(o, c) - l
+            if upper_wick / rng >= 0.45 and c < o:
+                rejection_state = "upper_rejection"
+            if lower_wick / rng >= 0.45 and c > o and rejection_state == "none":
+                rejection_state = "lower_rejection"
+
+        if atr_pct >= 2.5:
+            vol_regime = "high"
+        elif atr_pct >= 1.2:
+            vol_regime = "moderate"
+        else:
+            vol_regime = "low"
+
+        phase = base_state
+        bias = "neutral"
+        score = 0
+
+        if base_state in ("BTC_BULL_IMPULSE", "BTC_BULL_SOFT"):
+            bias = "bullish"
+            score += 2
+            if pullback_depth >= 1.0 and var_30m < 0:
+                phase = "BTC_BULL_PULLBACK"
+            elif range_pos >= 0.80 and rejection_state == "upper_rejection":
+                phase = "BTC_BULL_EXHAUSTION"
+            elif base_state == "BTC_BULL_IMPULSE":
+                phase = "BTC_BULL_IMPULSE"
+            else:
+                phase = "BTC_BULL_SOFT"
+        elif (
+            base_state == "BTC_BEAR_CONTINUATION"
+            and var_4h < 0
+            and var_2h > 0
+            and var_30m > 0
+        ):
+            # BTC_BEAR_PULLBACK : bearish de fond mais rebond court terme en cours
+            # → danger pour SHORT immédiat, attendre rejet.
+            bias = "transition"
+            score -= 1
+            phase = "BTC_BEAR_PULLBACK"
+        elif base_state == "BTC_BEAR_CONTINUATION":
+            bias = "bearish"
+            score -= 2
+            phase = "BTC_BEAR_CONTINUATION"
+        elif base_state == "BTC_BEAR_EXHAUSTION":
+            bias = "transition"
+            score -= 1
+            phase = "BTC_BEAR_EXHAUSTION"
+        elif base_state == "BTC_SWITCH_RISK":
+            bias = "transition"
+            phase = "BTC_SWITCH_RISK"
+        else:
+            if var_12h < -1.0 or (var_4h < -0.3 and var_2h <= 0):
+                bias = "bearish"
+                phase = "BTC_NEUTRAL_AFTER_BEAR"
+                score -= 1
+            elif var_12h > 1.0 or (var_4h > 0.3 and var_2h >= 0):
+                bias = "bullish"
+                phase = "BTC_NEUTRAL_AFTER_BULL"
+                score += 1
+            elif abs(var_4h) < 0.35 and abs(var_2h) < 0.25 and vol_regime == "low":
+                bias = "neutral"
+                phase = "BTC_NEUTRAL_ACCUMULATION"
+            else:
+                bias = "neutral"
+                phase = "BTC_RANGE_CHOP"
+
+        if rejection_state == "upper_rejection":
+            score -= 1
+            if phase in ("BTC_BULL_SOFT", "BTC_NEUTRAL_AFTER_BULL"):
+                phase = "BTC_BULL_EXHAUSTION"
+        elif rejection_state == "lower_rejection":
+            score += 1
+            if phase == "BTC_BEAR_CONTINUATION":
+                phase = "BTC_BEAR_EXHAUSTION"
+
+        out.update({
+            "btc_context_bias": bias,
+            "btc_phase": phase,
+            "btc_trend_slope_2h": round(var_2h, 2),
+            "btc_trend_slope_4h": round(var_4h, 2),
+            "btc_trend_slope_12h": round(var_12h, 2),
+            "btc_impulse_age": int(impulse_age),
+            "btc_pullback_depth": pullback_depth,
+            "btc_range_position": range_pos,
+            "btc_rejection_state": rejection_state,
+            "btc_support_distance_pct": support_distance,
+            "btc_resistance_distance_pct": resistance_distance,
+            "btc_volatility_regime": vol_regime,
+            "btc_context_score": score,
+        })
+        return out
+    except Exception as exc:
+        logger.warning("compute_btc_context_v65 échec: %s", exc)
+        return out
+
+
+def compute_rr_levels(direction, entry_avg, stop_loss, tp_values):
+    """
+    v6.5.0 — RR Theoretical Engine.
+    Calcule le RR théorique de chaque TP. Instrumentation uniquement.
+    """
+    keys = ["rr_tp1", "rr_tp2", "rr_tp3", "rr_tp4", "rr_tp5"]
+    out = {k: None for k in keys}
+    try:
+        direction = str(direction or "").upper()
+        entry = float(entry_avg)
+        sl = float(stop_loss)
+        risk = abs(entry - sl)
+        if direction not in ("LONG", "SHORT") or risk <= 0:
+            return out
+        for idx, tp in enumerate(tp_values, start=1):
+            if tp is None or tp == "":
+                continue
+            tp_f = float(tp)
+            rr = (tp_f - entry) / risk if direction == "LONG" else (entry - tp_f) / risk
+            out[f"rr_tp{idx}"] = round(rr, 2)
+        return out
+    except Exception:
+        return out
+
+
+def classify_setup_v65(direction, entry_type, trend_strength, late_entry_risk, late_entry_level,
+                       position_range, relative_vol, momentum_1h, momentum_3h,
+                       btc_phase, btc_context_bias, distance_ema21, rsi):
+    """
+    v6.5.0 — Setup Classification Engine.
+    Classification plus financière du setup, sans changer la décision.
+    """
+    direction = str(direction or "NEUTRAL").upper()
+    entry_type = str(entry_type or "NEUTRAL").upper()
+    trend_strength = str(trend_strength or "weak").lower()
+    btc_context_bias = str(btc_context_bias or "uncertain")
+    pr = _safe_float(position_range, 0.5)
+    vol = _safe_float(relative_vol, 0.0)
+    mom1 = _safe_float(momentum_1h, 0.0)
+    mom3 = _safe_float(momentum_3h, 0.0)
+    late = _safe_float(late_entry_risk, 0.0)
+    rsi_v = _safe_float(rsi, 50.0)
+
+    setup_family = "NEUTRAL_NO_TRADE"
+    if direction == "LONG":
+        if entry_type == "EARLY":
+            setup_family = "LONG_EARLY_REVERSAL" if btc_context_bias in ("bearish", "transition") else "LONG_EARLY_CONTINUATION"
+        elif entry_type == "BREAKOUT":
+            setup_family = "LONG_BREAKOUT"
+        elif entry_type == "MOMENTUM":
+            setup_family = "LONG_LATE_MOMENTUM" if (late >= 55 or pr >= 0.80 or rsi_v >= 70) else "LONG_MOMENTUM_CONTINUATION"
+    elif direction == "SHORT":
+        if entry_type == "EARLY":
+            setup_family = "SHORT_EARLY_BREAKDOWN" if btc_context_bias in ("bearish", "neutral") else "SHORT_EARLY_REVERSAL"
+        elif entry_type == "BREAKOUT":
+            setup_family = "SHORT_BREAKDOWN"
+        elif entry_type == "MOMENTUM":
+            setup_family = "SHORT_LATE_DUMP" if (late >= 55 or pr <= 0.15 or rsi_v <= 30) else "SHORT_MOMENTUM_CONTINUATION"
+
+    if late_entry_level == "HIGH" or late >= 70:
+        setup_maturity = "exhausted"
+    elif late >= 55:
+        setup_maturity = "late"
+    elif late >= 35:
+        setup_maturity = "mature"
+    elif entry_type == "EARLY":
+        setup_maturity = "early"
+    else:
+        setup_maturity = "healthy"
+
+    if direction == "LONG":
+        alignment = "aligned" if btc_context_bias == "bullish" else ("countertrend" if btc_context_bias == "bearish" else ("transition" if btc_context_bias == "transition" else "unclear"))
+    elif direction == "SHORT":
+        alignment = "aligned" if btc_context_bias == "bearish" else ("countertrend" if btc_context_bias == "bullish" else ("transition" if btc_context_bias == "transition" else "unclear"))
+    else:
+        alignment = "unclear"
+
+    if vol < 0.30:
+        setup_variant = "thin_participation"
+    elif vol >= 1.50 and setup_maturity in ("late", "exhausted"):
+        setup_variant = "late_volume_expansion"
+    elif "BREAK" in setup_family and vol >= 1.20:
+        setup_variant = "volume_confirmed_break"
+    elif entry_type == "EARLY" and vol < 0.80:
+        setup_variant = "quiet_early"
+    elif abs(mom1) > 2 or abs(mom3) > 5:
+        setup_variant = "fast_move"
+    else:
+        setup_variant = "standard"
+
+    late_label = "HIGH" if late >= 70 else ("MEDIUM" if late >= 40 else "LOW")
+
+    return {
+        "setup_family": setup_family,
+        "setup_variant": setup_variant,
+        "setup_maturity": setup_maturity,
+        "setup_directional_quality": trend_strength,
+        "setup_context_alignment": alignment,
+        "setup_late_risk_label": late_label,
+    }
+
+
+def classify_participation_v65(entry_type, direction, relative_vol, position_range, setup_maturity,
+                               taker_pts, oi_pts, funding_pts, long_short_pts,
+                               futures_zone, funding_signal, derivatives_bias):
+    """
+    v6.5.0 — Participation & Derivatives Engine.
+    Qualifie la participation au lieu de lire volume fort/faible de façon plate.
+    """
+    entry_type = str(entry_type or "").upper()
+    direction = str(direction or "").upper()
+    vol = _safe_float(relative_vol, 0.0)
+    taker_pts = int(taker_pts or 0)
+    oi_pts = int(oi_pts or 0)
+    funding_pts = int(funding_pts or 0)
+    long_short_pts = int(long_short_pts or 0)
+    futures_zone = str(futures_zone or "unavailable")
+
+    if vol < 0.30:
+        volume_regime = "very_low"
+    elif vol < 0.50:
+        volume_regime = "low"
+    elif vol < 0.80:
+        volume_regime = "moderate"
+    elif vol < 1.20:
+        volume_regime = "healthy"
+    elif vol < 1.80:
+        volume_regime = "high"
+    else:
+        volume_regime = "excessive"
+
+    if entry_type == "EARLY" and vol < 0.80:
+        volume_quality = "constructive"
+        volume_context = "quiet early participation"
+    elif entry_type == "BREAKOUT" and vol >= 1.20:
+        volume_quality = "constructive"
+        volume_context = "breakout volume confirmation"
+    elif entry_type == "MOMENTUM" and vol < 0.50:
+        volume_quality = "weak"
+        volume_context = "momentum without enough volume"
+    elif setup_maturity in ("late", "exhausted") and vol >= 1.20:
+        volume_quality = "late"
+        volume_context = "late volume expansion"
+    elif vol >= 1.80:
+        volume_quality = "danger"
+        volume_context = "excessive volume / possible crowding"
+    else:
+        volume_quality = "neutral"
+        volume_context = "volume neutral"
+
+    if taker_pts > 0 and oi_pts >= 0 and long_short_pts >= 0:
+        derivatives_alignment = "confirmed"
+    elif taker_pts > 0 or oi_pts > 0 or long_short_pts > 0 or funding_pts > 0:
+        derivatives_alignment = "partially_confirmed"
+    elif taker_pts < 0 or oi_pts < 0 or long_short_pts < 0:
+        derivatives_alignment = "opposed"
+    elif futures_zone == "unavailable":
+        derivatives_alignment = "unavailable"
+    else:
+        derivatives_alignment = "not_confirmed"
+
+    crowding_score = 0
+    if funding_signal in ("longs crowded", "shorts crowded"):
+        crowded_with_trade = (direction == "LONG" and funding_signal == "longs crowded") or (direction == "SHORT" and funding_signal == "shorts crowded")
+        crowding_score += 2 if crowded_with_trade else 1
+    if long_short_pts < 0:
+        crowding_score += 1
+    if futures_zone == "overheated":
+        crowding_score += 2
+    if volume_quality in ("late", "danger"):
+        crowding_score += 1
+
+    if crowding_score >= 4:
+        crowding_state = "extreme_crowding"
+    elif crowding_score >= 2:
+        crowding_state = "crowded"
+    elif crowding_score == 1:
+        crowding_state = "mild_crowding"
+    else:
+        crowding_state = "not_crowded"
+
+    participation_score = 0
+    participation_score += {"constructive": 2, "neutral": 0, "weak": -1, "late": -2, "danger": -3}.get(volume_quality, 0)
+    participation_score += {"confirmed": 2, "partially_confirmed": 1, "not_confirmed": 0, "unavailable": -1, "opposed": -2}.get(derivatives_alignment, 0)
+    if crowding_state in ("crowded", "extreme_crowding"):
+        participation_score -= 1
+
+    warnings = []
+    if volume_quality in ("weak", "late", "danger"):
+        warnings.append(volume_context)
+    if derivatives_alignment in ("opposed", "unavailable"):
+        warnings.append(f"derivatives {derivatives_alignment}")
+    if crowding_state in ("crowded", "extreme_crowding"):
+        warnings.append(crowding_state)
+
+    return {
+        "volume_regime": volume_regime,
+        "volume_quality": volume_quality,
+        "volume_context": volume_context,
+        "volume_vs_move": f"{entry_type.lower()}:{volume_quality}",
+        "oi_regime": "positive" if oi_pts > 0 else ("negative" if oi_pts < 0 else "neutral"),
+        "taker_regime": "positive" if taker_pts > 0 else ("negative" if taker_pts < 0 else "neutral"),
+        "funding_regime": str(funding_signal or "neutral"),
+        "crowding_state": crowding_state,
+        "derivatives_alignment": derivatives_alignment,
+        "participation_score": participation_score,
+        "participation_warning": " | ".join(warnings),
+    }
+
 
 def detect_market_regime(btc_klines, return_details=False):
     """
@@ -2679,6 +3111,8 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         risk_reward_tp2 = 0
         risk_reward_target = 0
 
+    rr_levels = compute_rr_levels(direction, entry_avg, stop_loss, [tp1, tp2, tp3, tp4, tp5])
+
     # Compat : risk_reward conservé = RR opérationnel TP2 (utilisé pour rr_valid)
     risk_reward = risk_reward_tp2
     rr_valid    = risk_reward_tp2 >= 2.0
@@ -3134,6 +3568,37 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     risk_guard_reason = bucket_decision["risk_guard_reason"]
     executable_signal = bucket_decision["executable_signal"]
 
+    # ── v6.5.0 — Instrumentation contexte/setup/participation ─────────────
+    setup_v65 = classify_setup_v65(
+        direction=direction,
+        entry_type=entry_type,
+        trend_strength=trend_strength,
+        late_entry_risk=late_entry_risk,
+        late_entry_level=late_entry_level,
+        position_range=position_range,
+        relative_vol=relative_vol,
+        momentum_1h=momentum_1h,
+        momentum_3h=momentum_3h,
+        btc_phase=market_details.get("btc_phase"),
+        btc_context_bias=market_details.get("btc_context_bias"),
+        distance_ema21=distance_ema21,
+        rsi=rsi,
+    )
+    participation_v65 = classify_participation_v65(
+        entry_type=entry_type,
+        direction=direction,
+        relative_vol=relative_vol,
+        position_range=position_range,
+        setup_maturity=setup_v65.get("setup_maturity"),
+        taker_pts=taker_pts,
+        oi_pts=oi_pts,
+        funding_pts=funding_pts,
+        long_short_pts=long_short_pts,
+        futures_zone=futures_zone,
+        funding_signal=funding_signal,
+        derivatives_bias=derivatives_bias,
+    )
+
     # Duree estimee calculee par Python
     if trend_strength == "strong":
         duration_label = "24 à 72h"
@@ -3162,6 +3627,23 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "volume_relatif":  relative_vol,
         "distance_ema21":  distance_ema21,
         "position_range":  position_range,
+        # ── v6.5.0 — contexte BTC enrichi ──────────────────────────────────
+        "btc_context_bias": market_details.get("btc_context_bias"),
+        "btc_phase": market_details.get("btc_phase"),
+        "btc_trend_slope_2h": market_details.get("btc_trend_slope_2h"),
+        "btc_trend_slope_4h": market_details.get("btc_trend_slope_4h"),
+        "btc_trend_slope_12h": market_details.get("btc_trend_slope_12h"),
+        "btc_impulse_age": market_details.get("btc_impulse_age"),
+        "btc_pullback_depth": market_details.get("btc_pullback_depth"),
+        "btc_range_position": market_details.get("btc_range_position"),
+        "btc_rejection_state": market_details.get("btc_rejection_state"),
+        "btc_support_distance_pct": market_details.get("btc_support_distance_pct"),
+        "btc_resistance_distance_pct": market_details.get("btc_resistance_distance_pct"),
+        "btc_volatility_regime": market_details.get("btc_volatility_regime"),
+        "btc_context_score": market_details.get("btc_context_score"),
+        # ── v6.5.0 — setup classification / participation ─────────────────
+        **setup_v65,
+        **participation_v65,
         "low_7d":          round(low_7d, 8),
         "distance_low_7d_pct": distance_low_7d_pct,
         "short_forbidden": short_forbidden,
@@ -3198,6 +3680,11 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "risk_reward":     risk_reward,
         "risk_reward_tp2":    risk_reward_tp2,
         "risk_reward_target": risk_reward_target,
+        "rr_tp1":             rr_levels.get("rr_tp1"),
+        "rr_tp2":             rr_levels.get("rr_tp2"),
+        "rr_tp3":             rr_levels.get("rr_tp3"),
+        "rr_tp4":             rr_levels.get("rr_tp4"),
+        "rr_tp5":             rr_levels.get("rr_tp5"),
         "tp_realism_note":    " ; ".join(realism_reasons) if realism_reasons else "TP8 réaliste",
         "rr_valid":        rr_valid,
         "max_leverage":    max_leverage,
@@ -3400,7 +3887,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 def validate_decision_config():
     """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
     warnings = []
-    if DECISION_VERSION != "v6.4.4":
+    if DECISION_VERSION != "v6.5.0":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
@@ -3580,6 +4067,7 @@ def full_analysis():
         btc_market_state, btc_market_state_reason = compute_btc_market_state_details(market_details)
         market_details["btc_market_state"] = btc_market_state
         market_details["btc_market_state_reason"] = btc_market_state_reason
+        market_details.update(compute_btc_context_v65(btc_klines, market_details))
 
         # ── PRESCORE v5 : tradability avant momentum brut ───────────────────
         scored = []
@@ -3867,7 +4355,12 @@ def full_analysis():
             fallback_note = "\n🔴 MODE SHORT_WATCH : momentum potentiellement épuisé. Observation uniquement, pas de short automatique.\n"
 
         lines = [
-            f"market_regime_btc: {market_regime} | btc_market_state: {market_details.get('btc_market_state', 'BTC_NEUTRAL_COMPRESS')}\n"
+            f"market_regime_btc: {market_regime} | btc_market_state: {market_details.get('btc_market_state', 'BTC_NEUTRAL_COMPRESS')} | "
+            f"btc_phase: {market_details.get('btc_phase')} | "
+            f"btc_context_bias: {market_details.get('btc_context_bias')} | "
+            f"btc_context_score: {market_details.get('btc_context_score')} | "
+            f"btc_impulse_age: {market_details.get('btc_impulse_age')} | "
+            f"btc_volatility_regime: {market_details.get('btc_volatility_regime')}\n"
             f"market_danger_level: {market_details.get('market_danger_level')} | "
             f"market_danger_score: {market_details.get('market_danger_score')} | "
             f"btc_rsi: {market_details.get('btc_rsi')} | "
@@ -3908,6 +4401,11 @@ def full_analysis():
                 f"stop_loss: {r['stop_loss']} | tp1: {r['tp1']} | tp2: {r['tp2']} | tp3: {r['tp3']} | tp4: {r['tp4']} | tp5: {r.get('tp5')} | "
                 f"target_rr: {r.get('target_rr')} | tp_realism: {r.get('tp_realism_note')} | "
                 f"risk_reward_tp2: {r.get('risk_reward_tp2')} | risk_reward_target: {r.get('risk_reward_target')} | rr_valid: {r['rr_valid']} | "
+                f"rr_tp1: {r.get('rr_tp1')} | rr_tp2: {r.get('rr_tp2')} | rr_tp3: {r.get('rr_tp3')} | rr_tp4: {r.get('rr_tp4')} | rr_tp5: {r.get('rr_tp5')} | "
+                f"setup_family: {r.get('setup_family')} | setup_maturity: {r.get('setup_maturity')} | setup_context_alignment: {r.get('setup_context_alignment')} | "
+                f"btc_phase: {r.get('btc_phase')} | btc_context_bias: {r.get('btc_context_bias')} | btc_context_score: {r.get('btc_context_score')} | "
+                f"volume_regime: {r.get('volume_regime')} | volume_quality: {r.get('volume_quality')} | derivatives_alignment: {r.get('derivatives_alignment')} | "
+                f"crowding_state: {r.get('crowding_state')} | participation_score: {r.get('participation_score')} | participation_warning: {r.get('participation_warning')} | "
                 f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
                 f"duration_label: {r['duration_label']} | "
                 f"v6_score_futures: {r.get('v6_score_futures')} | "
