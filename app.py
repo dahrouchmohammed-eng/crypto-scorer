@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.0")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.0.1")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -453,6 +453,11 @@ def log_signal(entry):
             "btc_phase": entry.get("btc_phase"),
             "btc_context_bias": entry.get("btc_context_bias"),
             "btc_market_state": entry.get("btc_market_state"),
+            "btc_impulse_age": entry.get("btc_impulse_age"),
+            "btc_last_pivot_type": entry.get("btc_last_pivot_type"),
+            "btc_last_pivot_age": entry.get("btc_last_pivot_age"),
+            "btc_last_pivot_distance_pct": entry.get("btc_last_pivot_distance_pct"),
+            "btc_last_pivot_method": entry.get("btc_last_pivot_method"),
             "setup_family": entry.get("setup_family"),
             "setup_context_alignment": entry.get("setup_context_alignment"),
             "setup_maturity": entry.get("setup_maturity"),
@@ -555,6 +560,10 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "btc_trend_slope_4h": market_details.get("btc_trend_slope_4h"),
         "btc_trend_slope_12h": market_details.get("btc_trend_slope_12h"),
         "btc_impulse_age": market_details.get("btc_impulse_age"),
+        "btc_last_pivot_type": market_details.get("btc_last_pivot_type"),
+        "btc_last_pivot_age": market_details.get("btc_last_pivot_age"),
+        "btc_last_pivot_distance_pct": market_details.get("btc_last_pivot_distance_pct"),
+        "btc_last_pivot_method": market_details.get("btc_last_pivot_method"),
         "btc_pullback_depth": market_details.get("btc_pullback_depth"),
         "btc_range_position": market_details.get("btc_range_position"),
         "btc_rejection_state": market_details.get("btc_rejection_state"),
@@ -1383,12 +1392,110 @@ def compute_btc_market_state(market_details):
     return state
 
 
+
+def _find_btc_structural_pivot(highs, lows, closes, pivot_type, lookback=36, left=3, right=3, fallback_window=6):
+    """
+    v6.5.0.1 — pivot BTC structurel sans appel API supplémentaire.
+
+    Utilise uniquement le tableau btc_klines_1h déjà chargé par /full_analysis.
+    - Cherche d'abord le dernier swing high / swing low significatif sur les N dernières bougies 1h.
+    - Validation locale : 3 bougies à gauche et 3 bougies à droite.
+    - Fallback : rolling max/min 6 bougies si aucun pivot propre n'est trouvé.
+
+    Retourne un dict exploitable pour btc_impulse_age :
+    - pivot_type
+    - pivot_age : nombre de bougies 1h depuis le pivot
+    - pivot_price
+    - pivot_distance_pct : distance du prix actuel au pivot
+    - pivot_method : swing_3_3 ou fallback_rolling_6
+    """
+    out = {
+        "pivot_type": pivot_type,
+        "pivot_age": 0,
+        "pivot_price": None,
+        "pivot_distance_pct": None,
+        "pivot_method": "unavailable",
+    }
+    try:
+        if not closes or len(closes) < max(left + right + 2, fallback_window + 1):
+            return out
+
+        n = len(closes)
+        current = float(closes[-1])
+        if current <= 0:
+            return out
+
+        pivot_type = "swing_low" if str(pivot_type).lower() == "swing_low" else "swing_high"
+        scan_start = max(left, n - int(lookback))
+        scan_end_exclusive = n - right
+        pivot_idx = None
+        pivot_price = None
+        pivot_method = "swing_3_3"
+
+        # Dernier pivot validé localement. On scanne du plus récent au plus ancien.
+        for i in range(scan_end_exclusive - 1, scan_start - 1, -1):
+            h_window = highs[i - left:i + right + 1]
+            l_window = lows[i - left:i + right + 1]
+            if pivot_type == "swing_high":
+                candidate = float(highs[i])
+                if candidate >= max(h_window):
+                    pivot_idx = i
+                    pivot_price = candidate
+                    break
+            else:
+                candidate = float(lows[i])
+                if candidate <= min(l_window):
+                    pivot_idx = i
+                    pivot_price = candidate
+                    break
+
+        # Fallback rolling 6 : garantit une valeur même en tendance très lisse.
+        if pivot_idx is None:
+            fw = min(int(fallback_window), n)
+            offset = n - fw
+            if pivot_type == "swing_high":
+                local = highs[-fw:]
+                local_idx = max(range(len(local)), key=lambda j: float(local[j]))
+                pivot_idx = offset + local_idx
+                pivot_price = float(highs[pivot_idx])
+            else:
+                local = lows[-fw:]
+                local_idx = min(range(len(local)), key=lambda j: float(local[j]))
+                pivot_idx = offset + local_idx
+                pivot_price = float(lows[pivot_idx])
+            pivot_method = "fallback_rolling_6"
+
+        age = max(0, n - 1 - int(pivot_idx))
+        if pivot_type == "swing_high":
+            distance_pct = round((float(pivot_price) - current) / current * 100, 2)
+        else:
+            distance_pct = round((current - float(pivot_price)) / current * 100, 2)
+
+        out.update({
+            "pivot_type": pivot_type,
+            "pivot_age": int(age),
+            "pivot_price": round(float(pivot_price), 8),
+            "pivot_distance_pct": distance_pct,
+            "pivot_method": pivot_method,
+        })
+        return out
+    except Exception as exc:
+        logger.warning("_find_btc_structural_pivot échec: %s", exc)
+        return out
+
+
 def compute_btc_context_v65(btc_klines_1h, market_details):
     """
-    v6.5.0 — Market Context Engine (instrumentation only).
+    v6.5.0.1 — Market Context Engine (instrumentation only).
+
     Enrichit le contexte BTC sans modifier directement les décisions Telegram.
-    Objectif : distinguer neutral accumulation / after bear / after bull,
-    qualifier pente, pullback, rejet, range et volatilité.
+    Utilise les klines BTC 1h déjà chargées dans /full_analysis : zéro appel API supplémentaire.
+
+    Refinement v6.5.0.1 :
+    - btc_impulse_age ne mesure plus des bougies consécutives dans une direction.
+    - Il mesure l'âge du dernier pivot structurel 1h compatible avec le biais BTC.
+    - Pivot significatif : swing high / swing low sur 36 bougies 1h, validation 3/3.
+    - Fallback : rolling max/min 6 bougies si aucun pivot propre n'est trouvé.
     """
     market_details = market_details or {}
     out = {
@@ -1398,6 +1505,10 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
         "btc_trend_slope_4h": market_details.get("btc_variation_4h", 0),
         "btc_trend_slope_12h": market_details.get("btc_variation_12h", 0),
         "btc_impulse_age": 0,
+        "btc_last_pivot_type": None,
+        "btc_last_pivot_age": 0,
+        "btc_last_pivot_distance_pct": None,
+        "btc_last_pivot_method": "unavailable",
         "btc_pullback_depth": 0,
         "btc_range_position": 0.5,
         "btc_rejection_state": "none",
@@ -1408,6 +1519,7 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
     }
     try:
         if not btc_klines_1h or len(btc_klines_1h) < 30:
+            out["btc_phase"] = "BTC_UNCLEAR"
             return out
 
         closes = [float(k[4]) for k in btc_klines_1h]
@@ -1415,6 +1527,7 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
         lows = [float(k[3]) for k in btc_klines_1h]
         current = closes[-1]
         if current <= 0:
+            out["btc_phase"] = "BTC_UNCLEAR"
             return out
 
         var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
@@ -1433,16 +1546,7 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
         support_distance = round((current - recent_low) / current * 100, 2) if current > 0 else None
         resistance_distance = round((recent_high - current) / current * 100, 2) if current > 0 else None
 
-        impulse_age = 0
-        dominant_sign = 1 if var_4h > 0 else (-1 if var_4h < 0 else 0)
-        if dominant_sign != 0:
-            for i in range(len(closes) - 1, 0, -1):
-                delta = closes[i] - closes[i - 1]
-                if (delta > 0 and dominant_sign > 0) or (delta < 0 and dominant_sign < 0):
-                    impulse_age += 1
-                else:
-                    break
-
+        # Pullback depth structurel sur les klines 1h déjà chargées.
         if var_4h >= 0:
             pullback_depth = round((recent_high - current) / recent_high * 100, 2) if recent_high > 0 else 0
         else:
@@ -1466,7 +1570,7 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
         else:
             vol_regime = "low"
 
-        phase = base_state
+        phase = base_state or "BTC_UNCLEAR"
         bias = "neutral"
         score = 0
 
@@ -1519,6 +1623,9 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
                 bias = "neutral"
                 phase = "BTC_RANGE_CHOP"
 
+        if not phase:
+            phase = "BTC_UNCLEAR"
+
         if rejection_state == "upper_rejection":
             score -= 1
             if phase in ("BTC_BULL_SOFT", "BTC_NEUTRAL_AFTER_BULL"):
@@ -1528,13 +1635,40 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
             if phase == "BTC_BEAR_CONTINUATION":
                 phase = "BTC_BEAR_EXHAUSTION"
 
+        # Pivot à utiliser pour l'âge d'impulsion :
+        # - contextes bull / after bull : dernier swing high
+        # - contextes bear / after bear : dernier swing low
+        # - transition / range : choix selon pente 12h/4h, fallback low si structure bearish.
+        if phase in ("BTC_BULL_IMPULSE", "BTC_BULL_PULLBACK", "BTC_BULL_EXHAUSTION", "BTC_BULL_SOFT", "BTC_NEUTRAL_AFTER_BULL"):
+            pivot_type = "swing_high"
+        elif phase in ("BTC_BEAR_CONTINUATION", "BTC_BEAR_PULLBACK", "BTC_BEAR_EXHAUSTION", "BTC_NEUTRAL_AFTER_BEAR"):
+            pivot_type = "swing_low"
+        else:
+            pivot_type = "swing_high" if (var_12h >= 0 or var_4h >= 0) else "swing_low"
+
+        pivot = _find_btc_structural_pivot(
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            pivot_type=pivot_type,
+            lookback=36,
+            left=3,
+            right=3,
+            fallback_window=6,
+        )
+        impulse_age = int(pivot.get("pivot_age") or 0)
+
         out.update({
             "btc_context_bias": bias,
             "btc_phase": phase,
             "btc_trend_slope_2h": round(var_2h, 2),
             "btc_trend_slope_4h": round(var_4h, 2),
             "btc_trend_slope_12h": round(var_12h, 2),
-            "btc_impulse_age": int(impulse_age),
+            "btc_impulse_age": impulse_age,
+            "btc_last_pivot_type": pivot.get("pivot_type"),
+            "btc_last_pivot_age": impulse_age,
+            "btc_last_pivot_distance_pct": pivot.get("pivot_distance_pct"),
+            "btc_last_pivot_method": pivot.get("pivot_method"),
             "btc_pullback_depth": pullback_depth,
             "btc_range_position": range_pos,
             "btc_rejection_state": rejection_state,
@@ -1546,8 +1680,8 @@ def compute_btc_context_v65(btc_klines_1h, market_details):
         return out
     except Exception as exc:
         logger.warning("compute_btc_context_v65 échec: %s", exc)
+        out["btc_phase"] = "BTC_UNCLEAR"
         return out
-
 
 def compute_rr_levels(direction, entry_avg, stop_loss, tp_values):
     """
@@ -3634,6 +3768,10 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "btc_trend_slope_4h": market_details.get("btc_trend_slope_4h"),
         "btc_trend_slope_12h": market_details.get("btc_trend_slope_12h"),
         "btc_impulse_age": market_details.get("btc_impulse_age"),
+        "btc_last_pivot_type": market_details.get("btc_last_pivot_type"),
+        "btc_last_pivot_age": market_details.get("btc_last_pivot_age"),
+        "btc_last_pivot_distance_pct": market_details.get("btc_last_pivot_distance_pct"),
+        "btc_last_pivot_method": market_details.get("btc_last_pivot_method"),
         "btc_pullback_depth": market_details.get("btc_pullback_depth"),
         "btc_range_position": market_details.get("btc_range_position"),
         "btc_rejection_state": market_details.get("btc_rejection_state"),
@@ -3887,7 +4025,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 def validate_decision_config():
     """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
     warnings = []
-    if DECISION_VERSION != "v6.5.0":
+    if DECISION_VERSION != "v6.5.0.1":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
@@ -4360,6 +4498,10 @@ def full_analysis():
             f"btc_context_bias: {market_details.get('btc_context_bias')} | "
             f"btc_context_score: {market_details.get('btc_context_score')} | "
             f"btc_impulse_age: {market_details.get('btc_impulse_age')} | "
+            f"btc_last_pivot_type: {market_details.get('btc_last_pivot_type')} | "
+            f"btc_last_pivot_age: {market_details.get('btc_last_pivot_age')} | "
+            f"btc_last_pivot_distance_pct: {market_details.get('btc_last_pivot_distance_pct')} | "
+            f"btc_last_pivot_method: {market_details.get('btc_last_pivot_method')} | "
             f"btc_volatility_regime: {market_details.get('btc_volatility_regime')}\n"
             f"market_danger_level: {market_details.get('market_danger_level')} | "
             f"market_danger_score: {market_details.get('market_danger_score')} | "
@@ -4404,6 +4546,7 @@ def full_analysis():
                 f"rr_tp1: {r.get('rr_tp1')} | rr_tp2: {r.get('rr_tp2')} | rr_tp3: {r.get('rr_tp3')} | rr_tp4: {r.get('rr_tp4')} | rr_tp5: {r.get('rr_tp5')} | "
                 f"setup_family: {r.get('setup_family')} | setup_maturity: {r.get('setup_maturity')} | setup_context_alignment: {r.get('setup_context_alignment')} | "
                 f"btc_phase: {r.get('btc_phase')} | btc_context_bias: {r.get('btc_context_bias')} | btc_context_score: {r.get('btc_context_score')} | "
+                f"btc_impulse_age: {r.get('btc_impulse_age')} | btc_last_pivot_type: {r.get('btc_last_pivot_type')} | btc_last_pivot_age: {r.get('btc_last_pivot_age')} | btc_last_pivot_distance_pct: {r.get('btc_last_pivot_distance_pct')} | "
                 f"volume_regime: {r.get('volume_regime')} | volume_quality: {r.get('volume_quality')} | derivatives_alignment: {r.get('derivatives_alignment')} | "
                 f"crowding_state: {r.get('crowding_state')} | participation_score: {r.get('participation_score')} | participation_warning: {r.get('participation_warning')} | "
                 f"max_leverage: {r['max_leverage']} | confidence: {r['confidence']} | "
@@ -5129,7 +5272,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.0",
+        "version": "6.5.0.1",
         "providers": results
     })
 
@@ -5138,7 +5281,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.0"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.0.1"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
