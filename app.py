@@ -5129,7 +5129,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.4.4",
+        "version": "6.5.0",
         "providers": results
     })
 
@@ -5138,7 +5138,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.4.4"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.0"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
