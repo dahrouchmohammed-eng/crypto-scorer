@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.2")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.3")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -221,7 +221,7 @@ LONG_PREMIUM_PR_BULL_IMPULSE = float(os.environ.get("LONG_PREMIUM_PR_BULL_IMPULS
 LONG_PREMIUM_PR_BULL_SOFT    = float(os.environ.get("LONG_PREMIUM_PR_BULL_SOFT", "0.70"))
 LONG_PREMIUM_PR_DEFAULT      = float(os.environ.get("LONG_PREMIUM_PR_DEFAULT", "0.65"))
 
-# ─── CONFIG V6.5.2 — CONTEXTUAL BUCKET RULES / SIGNALS BETA ─────────────────
+# ─── CONFIG V6.5.3 — CONTEXTUAL BUCKET RULES / SIGNALS BETA ─────────────────
 # Le score brut reste informatif. Ces règles ne changent pas le scoring :
 # elles pré-qualifient ou déclassent selon setup_family × btc_phase × conditions.
 ENABLE_SHORT_MOMENTUM_CONTINUATION_BETA = os.environ.get(
@@ -242,6 +242,9 @@ WATCHLIST_BUCKET_PRIORITY = {
     "WATCHLIST_SHORT_MOMENTUM_BEARISH":        80,
     "WATCHLIST_LONG_STRONG_DIAGNOSTIC":        60,
     "WATCHLIST_LONG_LATE_MOMENTUM":            55,
+    "REJECT_LONG_LATE_MOMENTUM":               54,
+    "REJECT_LONG_STRONG_DIAGNOSTIC":           53,
+    "REJECT_PREMIUM_BUCKET_CLEANUP":           52,
     "WATCHLIST_SCORE_HIGH_REVIEW":             50,
     "WATCHLIST_LONG_STRONG_REVIEW":            45,
     "WATCHLIST_SHORT_MOMENTUM_BLOCKED":        20,
@@ -2285,7 +2288,7 @@ def cap_signal_count(candidates, market_regime, data_source_run):
     Python reste maître de la décision : GPT ne fait que recopier ce qui reste.
     L'ordre (tri par score décroissant) est déjà appliqué en amont.
 
-    v6.5.2 :
+    v6.5.3 :
     - ouverture beta d'un seul bucket SHORT vers Telegram ;
     - max 1 SHORT_MOMENTUM_CONTINUATION_PREMIUM par run.
     """
@@ -2401,7 +2404,7 @@ def apply_contextual_v652_rules(
     derivatives_alignment,
 ):
     """
-    v6.5.2 — Préqualification contextuelle, appelée AVANT le bucket engine.
+    v6.5.3 — Préqualification contextuelle, appelée AVANT le bucket engine.
 
     Rôle :
     - ne remplace pas le score brut ;
@@ -2459,7 +2462,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = SHORT_MOMENTUM_BETA_LEVERAGE_CAP
         risk_guard = "short momentum continuation premium beta"
         decision = (
-            "CANDIDAT v6.5.2 beta : SHORT_MOMENTUM_CONTINUATION_PREMIUM "
+            "CANDIDAT v6.5.3 beta : SHORT_MOMENTUM_CONTINUATION_PREMIUM "
             f"validé par {btc_phase}, btc30m={btc_var_30m:+.2f}%, "
             f"late={late:.1f}, PR={pr:.3f}, volume={vol:.2f}x, crowding={crowding_state}."
         )
@@ -2483,7 +2486,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "long late momentum"
         decision = decision or (
-            f"WATCHLIST v6.5.2 : LONG_LATE_MOMENTUM downgradé "
+            f"WATCHLIST v6.5.3 : LONG_LATE_MOMENTUM downgradé "
             f"(btc_phase={btc_phase}, late={late:.1f}, PR={pr:.3f}, volume={vol:.2f}x)."
         )
         notes.append("LONG late momentum downgradé sauf bull pullback très propre")
@@ -2502,7 +2505,7 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = "short early mauvais contexte BTC"
             decision = (
-                f"REJET v6.5.2 : SHORT_EARLY en {btc_phase}, "
+                f"REJET v6.5.3 : SHORT_EARLY en {btc_phase}, "
                 "contexte BTC défavorable au short anticipé."
             )
             notes.append("SHORT_EARLY rejeté en contexte bull/switch")
@@ -2514,8 +2517,8 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = risk_guard or "short early diagnostic uniquement"
             decision = decision or (
-                f"WATCHLIST_DIAG v6.5.2 : SHORT_EARLY en {btc_phase} avec btc30m négatif. "
-                "Diagnostic uniquement, pas premium en v6.5.2."
+                f"WATCHLIST_DIAG v6.5.3 : SHORT_EARLY en {btc_phase} avec btc30m négatif. "
+                "Diagnostic uniquement, pas premium en v6.5.3."
             )
             notes.append("SHORT_EARLY bear context conservé en diagnostic seulement")
         else:
@@ -2526,7 +2529,7 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = risk_guard or "short early non premium"
             decision = decision or (
-                f"WATCHLIST v6.5.2 : SHORT_EARLY non premium "
+                f"WATCHLIST v6.5.3 : SHORT_EARLY non premium "
                 f"(btc_phase={btc_phase}, btc30m={btc_var_30m:+.2f}%)."
             )
             notes.append("SHORT_PREMIUM_CANDIDATE générique désactivé")
@@ -2549,7 +2552,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "long strong conditions premium insuffisantes"
         decision = decision or (
-            f"WATCHLIST v6.5.2 : LONG strong non premium "
+            f"WATCHLIST v6.5.3 : LONG strong non premium "
             f"(setup={setup_family}, maturity={setup_maturity}, score={global_score:.1f}, "
             f"late={late:.1f}, PR={pr:.3f})."
         )
@@ -2564,7 +2567,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "volume élevé sur setup tardif"
         decision = decision or (
-            f"WATCHLIST v6.5.2 : volume élevé ({vol:.2f}x) sur setup {setup_maturity}, "
+            f"WATCHLIST v6.5.3 : volume élevé ({vol:.2f}x) sur setup {setup_maturity}, "
             "risque de participation tardive/crowded."
         )
         notes.append("volume >1.20 + late/exhausted downgradé")
@@ -2602,7 +2605,7 @@ def apply_contextual_v652_rules(
         notes.append("LONG_PREMIUM BTC_BULL_SOFT guard: " + " | ".join(bullsoft_longpremium_blockers))
 
     return {
-        "version": "v6.5.2",
+        "version": "v6.5.3",
         "actions": actions,
         "forced_bucket": forced_bucket,
         "force_flag": force_flag,
@@ -2664,6 +2667,7 @@ def apply_contextual_bucket_engine(
     btc_var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
     btc_var_2h  = _safe_float(market_details.get("btc_variation_2h"), 0.0)
     btc_var_4h  = _safe_float(market_details.get("btc_variation_4h"), 0.0)
+    btc_phase   = str(market_details.get("btc_phase") or btc_market_state or "BTC_UNCLEAR")
 
     # Flags état BTC (calculé en amont dans compute_btc_market_state)
     is_bull_impulse    = (btc_market_state == "BTC_BULL_IMPULSE")
@@ -2672,6 +2676,11 @@ def apply_contextual_bucket_engine(
     is_switch_risk     = (btc_market_state == "BTC_SWITCH_RISK")
     is_bear_exhaustion = (btc_market_state == "BTC_BEAR_EXHAUSTION")
     is_neutral_comp    = (btc_market_state == "BTC_NEUTRAL_COMPRESS")
+    is_bearish_short_context = (
+        is_bear_cont
+        or btc_phase in ("BTC_BEAR_CONTINUATION", "BTC_NEUTRAL_AFTER_BEAR")
+        or (market_regime == "bearish" and btc_var_30m < 0)
+    )
 
     # PR adaptatif selon état BTC :
     # BTC_BULL_IMPULSE : PR jusqu'à 0.80 (continuation justifiée)
@@ -2777,24 +2786,26 @@ def apply_contextual_bucket_engine(
             signal_quality_bucket = "REJECT_SHORT_MOMENTUM_BULLISH"
             regime_rule_applied = "R2_SHORT_MOMENTUM_BULLISH_REJECT"
             telegram_rule_notes = f"SHORT MOMENTUM rejeté: BTC état {btc_market_state}"
-        elif is_bear_cont:
-            # Bearish confirmé : 49-62% WR selon trend — conserver pour apprendre
+        elif is_bearish_short_context:
+            # Contexte bearish / after-bear : garder en diagnostic, sauf si le layer v6.5.3
+            # l'a déjà préqualifié en SHORT_MOMENTUM_CONTINUATION_PREMIUM beta.
             decision_explain = (
-                f"WATCHLIST_DIAG v6.4.4 : SHORT MOMENTUM en BTC_BEAR_CONTINUATION "
-                f"(49-62% WR historique) — WATCHLIST diagnostic, pas Telegram."
+                f"WATCHLIST_DIAG v6.5.3 : SHORT MOMENTUM en {btc_phase} "
+                f"(market_regime={market_regime}, btc30m={btc_var_30m:+.2f}%). "
+                "Diagnostic bearish/after-bear ; pas Telegram sans préqualification beta stricte."
             )
             signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BEARISH"
-            regime_rule_applied = "R2_SHORT_MOMENTUM_BEAR_CONT_DIAG"
-            telegram_rule_notes = "SHORT MOMENTUM bearish: diagnostic uniquement"
+            regime_rule_applied = "R2_SHORT_MOMENTUM_BEARISH_DIAG"
+            telegram_rule_notes = f"SHORT MOMENTUM {btc_phase}: diagnostic uniquement hors beta stricte"
         else:
-            # neutral/compress : 41% WR — bloquer Telegram
+            # Range/neutral non bearish : bloquer Telegram sans wording neutral trompeur.
             decision_explain = (
-                f"WATCHLIST v6.4.4 : SHORT MOMENTUM {market_regime} non exécutable "
-                f"(41% WR en neutral), conservé en diagnostic."
+                f"WATCHLIST v6.5.3 : SHORT MOMENTUM non exécutable hors contexte beta "
+                f"(market_regime={market_regime}, btc_phase={btc_phase}, btc30m={btc_var_30m:+.2f}%)."
             )
             signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
             regime_rule_applied = "R2_SHORT_MOMENTUM_BLOCKED"
-            telegram_rule_notes = f"SHORT MOMENTUM bloqué Telegram (régime {market_regime})"
+            telegram_rule_notes = f"SHORT MOMENTUM bloqué Telegram ({market_regime}/{btc_phase})"
 
     # ═══════════════════════════════════════════════════════════════════════
     # RÈGLE 4 — score>=70 — ADAPTATIF EARLY vs MOMENTUM
@@ -2939,14 +2950,14 @@ def apply_contextual_bucket_engine(
         telegram_rule_notes = f"SHORT EARLY {context}: WATCHLIST_PREMIUM 70% WR"
 
     # ═══════════════════════════════════════════════════════════════════════
-    # V6.5.2 — Overrides contextuels après règles v6.4.4, avant gate Telegram
+    # V6.5.3 — Overrides contextuels après règles v6.4.4, avant gate Telegram
     # Objectif : corriger les faux LONG_PREMIUM bullsoft, durcir WATCHLIST,
     # et ouvrir uniquement SHORT_MOMENTUM_CONTINUATION_PREMIUM en beta Signals.
     # ═══════════════════════════════════════════════════════════════════════
     v652_actions = set(v652_context.get("actions", []))
 
     # Correction bullsoft Signals : si le bucket engine vient de créer LONG_PREMIUM
-    # mais que le contexte v6.5.2 détecte un LONG MOMENTUM fragile, downgrade.
+    # mais que le contexte v6.5.3 détecte un LONG MOMENTUM fragile, downgrade.
     if signal_quality_bucket == "LONG_PREMIUM" and "downgrade_bullsoft_longpremium" in v652_actions:
         flag = "WATCHLIST"
         confidence = min(confidence, 60)
@@ -2957,11 +2968,11 @@ def apply_contextual_bucket_engine(
         blockers = v652_context.get("bullsoft_longpremium_blockers", [])
         telegram_rule_notes = "LONG_PREMIUM BTC_BULL_SOFT downgradé: " + " | ".join(blockers)
         decision_explain = (
-            "WATCHLIST v6.5.2 : LONG_PREMIUM en BTC_BULL_SOFT downgradé "
+            "WATCHLIST v6.5.3 : LONG_PREMIUM en BTC_BULL_SOFT downgradé "
             f"({'; '.join(blockers)})."
         )
 
-    # Overrides généraux v6.5.2 : s'appliquent si pas de hard REJET déjà posé,
+    # Overrides généraux v6.5.3 : s'appliquent si pas de hard REJET déjà posé,
     # sauf short early bull context qui est explicitement un REJET contextuel.
     elif v652_context.get("force_flag"):
         requested_flag = v652_context.get("force_flag")
@@ -2987,7 +2998,7 @@ def apply_contextual_bucket_engine(
                 max_leverage = min(max_leverage, SHORT_MOMENTUM_BETA_LEVERAGE_CAP)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # RÈGLE 6 — Porte Telegram stricte (v6.5.2)
+    # RÈGLE 6 — Porte Telegram stricte (v6.5.3)
     # Buckets autorisés : LONG_PREMIUM + SHORT_MOMENTUM_CONTINUATION_PREMIUM beta.
     # ═══════════════════════════════════════════════════════════════════════
     if flag == "CANDIDAT" and signal_quality_bucket not in TELEGRAM_ALLOWED_BUCKETS:
@@ -3014,6 +3025,37 @@ def apply_contextual_bucket_engine(
     elif flag == "REJET":
         confidence   = min(confidence, 55)
         max_leverage = min(max_leverage, 3)
+
+    # ── v6.5.3 — Nettoyage final buckets premium incohérents ────────────────
+    # Cas observé : un hard reject post-v6.5.3 gardait parfois un bucket
+    # WATCHLIST_PREMIUM_* hérité des règles v6.4.4. Le comportement était bon
+    # mais le tracker devenait trompeur. Un REJET ne doit jamais rester premium.
+    if flag == "REJET" and str(signal_quality_bucket).startswith("WATCHLIST_PREMIUM_"):
+        if "downgrade_long_late_momentum" in v652_actions:
+            signal_quality_bucket = "REJECT_LONG_LATE_MOMENTUM"
+            regime_rule_applied = "V653_REJECT_LONG_LATE_MOMENTUM_BUCKET_CLEANUP"
+            telegram_rule_notes = "Bucket premium nettoyé: REJET LONG_LATE_MOMENTUM"
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long late momentum rejeté"
+            if decision_explain.startswith("WATCHLIST") or "WATCHLIST_PREMIUM" in decision_explain:
+                decision_explain = "REJET v6.5.3 : LONG_LATE_MOMENTUM incompatible avec un bucket premium."
+        elif "downgrade_long_strong_diagnostic" in v652_actions:
+            signal_quality_bucket = "REJECT_LONG_STRONG_DIAGNOSTIC"
+            regime_rule_applied = "V653_REJECT_LONG_STRONG_BUCKET_CLEANUP"
+            telegram_rule_notes = "Bucket premium nettoyé: REJET LONG_STRONG diagnostic"
+            risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long strong diagnostic rejeté"
+            if decision_explain.startswith("WATCHLIST") or "WATCHLIST_PREMIUM" in decision_explain:
+                decision_explain = "REJET v6.5.3 : LONG strong ne remplit pas les conditions premium."
+        else:
+            signal_quality_bucket = "REJECT_PREMIUM_BUCKET_CLEANUP"
+            regime_rule_applied = "V653_REJECT_PREMIUM_BUCKET_CLEANUP"
+            telegram_rule_notes = "Bucket premium nettoyé: REJET final"
+
+    elif flag == "WATCHLIST" and str(signal_quality_bucket).startswith("WATCHLIST_PREMIUM_") and "downgrade_long_strong_diagnostic" in v652_actions:
+        signal_quality_bucket = "WATCHLIST_LONG_STRONG_DIAGNOSTIC"
+        regime_rule_applied = "V653_WATCHLIST_LONG_STRONG_DIAGNOSTIC_BUCKET_CLEANUP"
+        telegram_rule_notes = "LONG strong downgradé: diagnostic, non premium"
+        if "WATCHLIST_PREMIUM" in decision_explain:
+            decision_explain = "WATCHLIST v6.5.3 : LONG strong downgradé en diagnostic, conditions premium insuffisantes."
 
     executable_signal = (flag == "CANDIDAT")
 
@@ -3885,7 +3927,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             decision_explain  = decision_explain or f"WATCHLIST : short proche du bas de range ({position_range:.3f})."
 
     # Regle 10 : anti-short BTC bullish
-    # v6.5.2 : on conserve le guard, mais on évite de tuer préventivement le
+    # v6.5.3 : on conserve le guard, mais on évite de tuer préventivement le
     # futur bucket SHORT_MOMENTUM_CONTINUATION_PREMIUM quand le btc_phase
     # indique déjà range / after-bear / bear-continuation avec btc30m négatif.
     if direction == "SHORT" and market_regime == "bullish" and not hard_reject:
@@ -4014,8 +4056,8 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
 
-    # ── v6.5.2 — Instrumentation setup/participation AVANT bucket engine ───
-    # v6.5.0 instrumentait ces champs après le bucket engine. En v6.5.2 ils
+    # ── v6.5.3 — Instrumentation setup/participation AVANT bucket engine ───
+    # v6.5.0 instrumentait ces champs après le bucket engine. En v6.5.3 ils
     # deviennent des inputs de décision contextuelle, sans modifier le score brut.
     setup_v65 = classify_setup_v65(
         direction=direction,
@@ -4047,7 +4089,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         derivatives_bias=derivatives_bias,
     )
 
-    # ── V6.5.2 — Contextual pre-qualification layer ────────────────────────
+    # ── V6.5.3 — Contextual pre-qualification layer ────────────────────────
     # Appelée avant apply_contextual_bucket_engine, appliquée dans le bucket
     # engine après les règles v6.4.4 et avant la gate Telegram.
     v652_context = apply_contextual_v652_rules(
@@ -4078,7 +4120,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         derivatives_alignment=participation_v65.get("derivatives_alignment"),
     )
 
-    # ── V6.4.4-final-clean + V6.5.2 context — TELEGRAM BUCKET ENGINE ────────
+    # ── V6.4.4-final-clean + V6.5.3 context — TELEGRAM BUCKET ENGINE ────────
     bucket_decision = apply_contextual_bucket_engine(
         flag=flag,
         confidence=confidence,
@@ -4410,7 +4452,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 def validate_decision_config():
     """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
     warnings = []
-    if DECISION_VERSION != "v6.5.2":
+    if DECISION_VERSION != "v6.5.3":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
@@ -4422,12 +4464,14 @@ def validate_decision_config():
         "LONG_EARLY_NEUTRAL_PREMIUM",
         "WATCHLIST_PREMIUM_SCORE_HIGH_EARLY",
         "WATCHLIST_PREMIUM_LONG_STRONG",
-        "SHORT_PREMIUM_CANDIDATE",
+        "SHORT_MOMENTUM_CONTINUATION_PREMIUM",
         "WATCHLIST_SHORT_MOMENTUM_BEARISH",
+        "WATCHLIST_LONG_STRONG_DIAGNOSTIC",
+        "REJECT_LONG_LATE_MOMENTUM",
     ):
         if bucket not in WATCHLIST_BUCKET_PRIORITY:
             warnings.append(f"{bucket} absent de WATCHLIST_BUCKET_PRIORITY")
-    extra_telegram = TELEGRAM_ALLOWED_BUCKETS - {"LONG_PREMIUM", "SHORT_PREMIUM"}
+    extra_telegram = TELEGRAM_ALLOWED_BUCKETS - {"LONG_PREMIUM", "SHORT_MOMENTUM_CONTINUATION_PREMIUM"}
     if extra_telegram:
         warnings.append(f"Buckets Telegram non prévus: {sorted(extra_telegram)}")
 
@@ -5657,7 +5701,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.2",
+        "version": "6.5.3",
         "providers": results
     })
 
@@ -5666,7 +5710,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.2"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.3"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
