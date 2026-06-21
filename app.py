@@ -4410,7 +4410,7 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 def validate_decision_config():
     """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
     warnings = []
-    if DECISION_VERSION != "v6.5.0.1":
+    if DECISION_VERSION != "v6.5.2":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
@@ -5657,7 +5657,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.0.1",
+        "version": "6.5.2",
         "providers": results
     })
 
@@ -5666,7 +5666,7 @@ def provider_test():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.0.1"})
+    return jsonify({"status": "ok", "service": "crypto-scorer", "version": "6.5.2"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
