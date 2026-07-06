@@ -1,0 +1,2303 @@
+{
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|excessive|v653": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|high|v653": {
+    "n": 6,
+    "wins": 4,
+    "losses": 2,
+    "wr": 0.667,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|excessive|v653": {
+    "n": 20,
+    "wins": 13,
+    "losses": 7,
+    "wr": 0.65,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|high|v653": {
+    "n": 16,
+    "wins": 8,
+    "losses": 8,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|excessive|v653": {
+    "n": 11,
+    "wins": 7,
+    "losses": 4,
+    "wr": 0.636,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|high|v653": {
+    "n": 10,
+    "wins": 3,
+    "losses": 7,
+    "wr": 0.3,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_NEUTRAL_AFTER_BEAR|high|v653": {
+    "n": 7,
+    "wins": 3,
+    "losses": 4,
+    "wr": 0.429,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|excessive|v653": {
+    "n": 5,
+    "wins": 2,
+    "losses": 3,
+    "wr": 0.4,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|high|v653": {
+    "n": 8,
+    "wins": 7,
+    "losses": 1,
+    "wr": 0.875,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_CONTINUATION|low|v653": {
+    "n": 10,
+    "wins": 6,
+    "losses": 4,
+    "wr": 0.6,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|low|v653": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|very_low|v653": {
+    "n": 5,
+    "wins": 3,
+    "losses": 2,
+    "wr": 0.6,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|excessive|v653": {
+    "n": 10,
+    "wins": 4,
+    "losses": 6,
+    "wr": 0.4,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|high|v653": {
+    "n": 7,
+    "wins": 2,
+    "losses": 5,
+    "wr": 0.286,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|low|v653": {
+    "n": 59,
+    "wins": 33,
+    "losses": 26,
+    "wr": 0.559,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|moderate|v653": {
+    "n": 25,
+    "wins": 18,
+    "losses": 7,
+    "wr": 0.72,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|very_low|v653": {
+    "n": 16,
+    "wins": 12,
+    "losses": 4,
+    "wr": 0.75,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_IMPULSE|excessive|v653": {
+    "n": 8,
+    "wins": 4,
+    "losses": 4,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_IMPULSE",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|excessive|v653": {
+    "n": 17,
+    "wins": 11,
+    "losses": 6,
+    "wr": 0.647,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|high|v653": {
+    "n": 10,
+    "wins": 6,
+    "losses": 4,
+    "wr": 0.6,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|low|v653": {
+    "n": 20,
+    "wins": 12,
+    "losses": 8,
+    "wr": 0.6,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|moderate|v653": {
+    "n": 28,
+    "wins": 18,
+    "losses": 10,
+    "wr": 0.643,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|very_low|v653": {
+    "n": 11,
+    "wins": 8,
+    "losses": 3,
+    "wr": 0.727,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|excessive|v653": {
+    "n": 17,
+    "wins": 10,
+    "losses": 7,
+    "wr": 0.588,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|high|v653": {
+    "n": 19,
+    "wins": 10,
+    "losses": 9,
+    "wr": 0.526,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|low|v653": {
+    "n": 70,
+    "wins": 47,
+    "losses": 23,
+    "wr": 0.671,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|moderate|v653": {
+    "n": 64,
+    "wins": 38,
+    "losses": 26,
+    "wr": 0.594,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|very_low|v653": {
+    "n": 33,
+    "wins": 14,
+    "losses": 19,
+    "wr": 0.424,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|v653": {
+    "n": 18,
+    "wins": 14,
+    "losses": 4,
+    "wr": 0.778,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|excessive|v653": {
+    "n": 14,
+    "wins": 8,
+    "losses": 6,
+    "wr": 0.571,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|v653": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|v653": {
+    "n": 59,
+    "wins": 34,
+    "losses": 25,
+    "wr": 0.576,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|v653": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|very_low|v653": {
+    "n": 24,
+    "wins": 11,
+    "losses": 13,
+    "wr": 0.458,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|excessive|v653": {
+    "n": 5,
+    "wins": 3,
+    "losses": 2,
+    "wr": 0.6,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|high|v653": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|low|v653": {
+    "n": 17,
+    "wins": 10,
+    "losses": 7,
+    "wr": 0.588,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|moderate|v653": {
+    "n": 10,
+    "wins": 7,
+    "losses": 3,
+    "wr": 0.7,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_SWITCH_RISK|low|v653": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "v653",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_SWITCH_RISK",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|excessive|v653": {
+    "n": 9,
+    "wins": 4,
+    "losses": 5,
+    "wr": 0.444,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|high|v653": {
+    "n": 6,
+    "wins": 5,
+    "losses": 1,
+    "wr": 0.833,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_EXHAUSTION|high|v653": {
+    "n": 13,
+    "wins": 11,
+    "losses": 2,
+    "wr": 0.846,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_NEUTRAL_AFTER_BEAR|excessive|v653": {
+    "n": 7,
+    "wins": 2,
+    "losses": 5,
+    "wr": 0.286,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|excessive|v653": {
+    "n": 16,
+    "wins": 11,
+    "losses": 5,
+    "wr": 0.688,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|high|v653": {
+    "n": 8,
+    "wins": 3,
+    "losses": 5,
+    "wr": 0.375,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|low|v653": {
+    "n": 8,
+    "wins": 5,
+    "losses": 3,
+    "wr": 0.625,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|moderate|v653": {
+    "n": 9,
+    "wins": 4,
+    "losses": 5,
+    "wr": 0.444,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|excessive|v653": {
+    "n": 9,
+    "wins": 5,
+    "losses": 4,
+    "wr": 0.556,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|low|v653": {
+    "n": 19,
+    "wins": 17,
+    "losses": 2,
+    "wr": 0.895,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|moderate|v653": {
+    "n": 14,
+    "wins": 11,
+    "losses": 3,
+    "wr": 0.786,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|v653": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|v653": {
+    "n": 8,
+    "wins": 0,
+    "losses": 8,
+    "wr": 0.0,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|v653": {
+    "n": 23,
+    "wins": 14,
+    "losses": 9,
+    "wr": 0.609,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|v653": {
+    "n": 13,
+    "wins": 7,
+    "losses": 6,
+    "wr": 0.538,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_RANGE_CHOP|low|v653": {
+    "n": 7,
+    "wins": 1,
+    "losses": 6,
+    "wr": 0.143,
+    "source": "v653",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "LONG|BREAKOUT|BTC_BULL_SOFT|excessive|v65x": {
+    "n": 6,
+    "wins": 2,
+    "losses": 4,
+    "wr": 0.333,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "BREAKOUT",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|excessive|v65x": {
+    "n": 12,
+    "wins": 6,
+    "losses": 6,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|high|v65x": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|excessive|v65x": {
+    "n": 25,
+    "wins": 16,
+    "losses": 9,
+    "wr": 0.64,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|high|v65x": {
+    "n": 20,
+    "wins": 12,
+    "losses": 8,
+    "wr": 0.6,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|excessive|v65x": {
+    "n": 13,
+    "wins": 8,
+    "losses": 5,
+    "wr": 0.615,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|high|v65x": {
+    "n": 16,
+    "wins": 6,
+    "losses": 10,
+    "wr": 0.375,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_NEUTRAL_AFTER_BEAR|high|v65x": {
+    "n": 8,
+    "wins": 4,
+    "losses": 4,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|excessive|v65x": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|high|v65x": {
+    "n": 8,
+    "wins": 7,
+    "losses": 1,
+    "wr": 0.875,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_CONTINUATION|low|v65x": {
+    "n": 10,
+    "wins": 6,
+    "losses": 4,
+    "wr": 0.6,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|low|v65x": {
+    "n": 14,
+    "wins": 7,
+    "losses": 7,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|very_low|v65x": {
+    "n": 8,
+    "wins": 6,
+    "losses": 2,
+    "wr": 0.75,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|excessive|v65x": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|high|v65x": {
+    "n": 9,
+    "wins": 3,
+    "losses": 6,
+    "wr": 0.333,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|low|v65x": {
+    "n": 68,
+    "wins": 38,
+    "losses": 30,
+    "wr": 0.559,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|moderate|v65x": {
+    "n": 31,
+    "wins": 20,
+    "losses": 11,
+    "wr": 0.645,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|very_low|v65x": {
+    "n": 18,
+    "wins": 12,
+    "losses": 6,
+    "wr": 0.667,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_IMPULSE|excessive|v65x": {
+    "n": 8,
+    "wins": 4,
+    "losses": 4,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_IMPULSE",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|excessive|v65x": {
+    "n": 18,
+    "wins": 11,
+    "losses": 7,
+    "wr": 0.611,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|high|v65x": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|low|v65x": {
+    "n": 26,
+    "wins": 12,
+    "losses": 14,
+    "wr": 0.462,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|moderate|v65x": {
+    "n": 31,
+    "wins": 19,
+    "losses": 12,
+    "wr": 0.613,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|very_low|v65x": {
+    "n": 15,
+    "wins": 11,
+    "losses": 4,
+    "wr": 0.733,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|excessive|v65x": {
+    "n": 25,
+    "wins": 10,
+    "losses": 15,
+    "wr": 0.4,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|high|v65x": {
+    "n": 24,
+    "wins": 11,
+    "losses": 13,
+    "wr": 0.458,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|low|v65x": {
+    "n": 97,
+    "wins": 60,
+    "losses": 37,
+    "wr": 0.619,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|moderate|v65x": {
+    "n": 84,
+    "wins": 44,
+    "losses": 40,
+    "wr": 0.524,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|very_low|v65x": {
+    "n": 40,
+    "wins": 19,
+    "losses": 21,
+    "wr": 0.475,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|v65x": {
+    "n": 18,
+    "wins": 14,
+    "losses": 4,
+    "wr": 0.778,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|moderate|v65x": {
+    "n": 6,
+    "wins": 2,
+    "losses": 4,
+    "wr": 0.333,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|excessive|v65x": {
+    "n": 15,
+    "wins": 9,
+    "losses": 6,
+    "wr": 0.6,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|v65x": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|v65x": {
+    "n": 63,
+    "wins": 36,
+    "losses": 27,
+    "wr": 0.571,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|v65x": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|very_low|v65x": {
+    "n": 30,
+    "wins": 16,
+    "losses": 14,
+    "wr": 0.533,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|excessive|v65x": {
+    "n": 8,
+    "wins": 3,
+    "losses": 5,
+    "wr": 0.375,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|high|v65x": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|low|v65x": {
+    "n": 22,
+    "wins": 12,
+    "losses": 10,
+    "wr": 0.545,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|moderate|v65x": {
+    "n": 12,
+    "wins": 9,
+    "losses": 3,
+    "wr": 0.75,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_SWITCH_RISK|low|v65x": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "v65x",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_SWITCH_RISK",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|excessive|v65x": {
+    "n": 9,
+    "wins": 4,
+    "losses": 5,
+    "wr": 0.444,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|high|v65x": {
+    "n": 6,
+    "wins": 5,
+    "losses": 1,
+    "wr": 0.833,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_EXHAUSTION|high|v65x": {
+    "n": 14,
+    "wins": 12,
+    "losses": 2,
+    "wr": 0.857,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_NEUTRAL_AFTER_BEAR|excessive|v65x": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|EARLY|BTC_NEUTRAL_AFTER_BEAR|high|v65x": {
+    "n": 7,
+    "wins": 3,
+    "losses": 4,
+    "wr": 0.429,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|excessive|v65x": {
+    "n": 16,
+    "wins": 11,
+    "losses": 5,
+    "wr": 0.688,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|high|v65x": {
+    "n": 8,
+    "wins": 3,
+    "losses": 5,
+    "wr": 0.375,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|low|v65x": {
+    "n": 8,
+    "wins": 5,
+    "losses": 3,
+    "wr": 0.625,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|moderate|v65x": {
+    "n": 12,
+    "wins": 7,
+    "losses": 5,
+    "wr": 0.583,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|excessive|v65x": {
+    "n": 9,
+    "wins": 5,
+    "losses": 4,
+    "wr": 0.556,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|low|v65x": {
+    "n": 25,
+    "wins": 21,
+    "losses": 4,
+    "wr": 0.84,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|moderate|v65x": {
+    "n": 17,
+    "wins": 13,
+    "losses": 4,
+    "wr": 0.765,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|v65x": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|excessive|v65x": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|v65x": {
+    "n": 9,
+    "wins": 0,
+    "losses": 9,
+    "wr": 0.0,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|v65x": {
+    "n": 36,
+    "wins": 23,
+    "losses": 13,
+    "wr": 0.639,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|v65x": {
+    "n": 21,
+    "wins": 13,
+    "losses": 8,
+    "wr": 0.619,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|very_low|v65x": {
+    "n": 7,
+    "wins": 5,
+    "losses": 2,
+    "wr": 0.714,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "very_low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_RANGE_CHOP|low|v65x": {
+    "n": 15,
+    "wins": 7,
+    "losses": 8,
+    "wr": 0.467,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_RANGE_CHOP|moderate|v65x": {
+    "n": 8,
+    "wins": 5,
+    "losses": 3,
+    "wr": 0.625,
+    "source": "v65x",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|BREAKOUT|BTC_BULL_SOFT|excessive|all": {
+    "n": 6,
+    "wins": 2,
+    "losses": 4,
+    "wr": 0.333,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "BREAKOUT",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|excessive|all": {
+    "n": 12,
+    "wins": 6,
+    "losses": 6,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_EXHAUSTION|high|all": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|excessive|all": {
+    "n": 25,
+    "wins": 16,
+    "losses": 9,
+    "wr": 0.64,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_PULLBACK|high|all": {
+    "n": 20,
+    "wins": 12,
+    "losses": 8,
+    "wr": 0.6,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|excessive|all": {
+    "n": 13,
+    "wins": 8,
+    "losses": 5,
+    "wr": 0.615,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_BULL_SOFT|high|all": {
+    "n": 16,
+    "wins": 6,
+    "losses": 10,
+    "wr": 0.375,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_NEUTRAL_AFTER_BEAR|high|all": {
+    "n": 8,
+    "wins": 4,
+    "losses": 4,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|excessive|all": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|EARLY|BTC_RANGE_CHOP|high|all": {
+    "n": 8,
+    "wins": 7,
+    "losses": 1,
+    "wr": 0.875,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_CONTINUATION|low|all": {
+    "n": 10,
+    "wins": 6,
+    "losses": 4,
+    "wr": 0.6,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|low|all": {
+    "n": 14,
+    "wins": 7,
+    "losses": 7,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BEAR_EXHAUSTION|very_low|all": {
+    "n": 8,
+    "wins": 6,
+    "losses": 2,
+    "wr": 0.75,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|excessive|all": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|high|all": {
+    "n": 9,
+    "wins": 3,
+    "losses": 6,
+    "wr": 0.333,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|low|all": {
+    "n": 68,
+    "wins": 38,
+    "losses": 30,
+    "wr": 0.559,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|moderate|all": {
+    "n": 31,
+    "wins": 20,
+    "losses": 11,
+    "wr": 0.645,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_EXHAUSTION|very_low|all": {
+    "n": 18,
+    "wins": 12,
+    "losses": 6,
+    "wr": 0.667,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_EXHAUSTION",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_IMPULSE|excessive|all": {
+    "n": 8,
+    "wins": 4,
+    "losses": 4,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_IMPULSE",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|excessive|all": {
+    "n": 18,
+    "wins": 11,
+    "losses": 7,
+    "wr": 0.611,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|high|all": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|low|all": {
+    "n": 26,
+    "wins": 12,
+    "losses": 14,
+    "wr": 0.462,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|moderate|all": {
+    "n": 31,
+    "wins": 19,
+    "losses": 12,
+    "wr": 0.613,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_PULLBACK|very_low|all": {
+    "n": 15,
+    "wins": 11,
+    "losses": 4,
+    "wr": 0.733,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_PULLBACK",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|excessive|all": {
+    "n": 25,
+    "wins": 10,
+    "losses": 15,
+    "wr": 0.4,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|high|all": {
+    "n": 24,
+    "wins": 11,
+    "losses": 13,
+    "wr": 0.458,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|low|all": {
+    "n": 97,
+    "wins": 60,
+    "losses": 37,
+    "wr": 0.619,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|moderate|all": {
+    "n": 84,
+    "wins": 44,
+    "losses": 40,
+    "wr": 0.524,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_BULL_SOFT|very_low|all": {
+    "n": 40,
+    "wins": 19,
+    "losses": 21,
+    "wr": 0.475,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BULL_SOFT",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|all": {
+    "n": 18,
+    "wins": 14,
+    "losses": 4,
+    "wr": 0.778,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|moderate|all": {
+    "n": 6,
+    "wins": 2,
+    "losses": 4,
+    "wr": 0.333,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|excessive|all": {
+    "n": 15,
+    "wins": 9,
+    "losses": 6,
+    "wr": 0.6,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|all": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|all": {
+    "n": 63,
+    "wins": 36,
+    "losses": 27,
+    "wr": 0.571,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|all": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|very_low|all": {
+    "n": 30,
+    "wins": 16,
+    "losses": 14,
+    "wr": 0.533,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "very_low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|excessive|all": {
+    "n": 8,
+    "wins": 3,
+    "losses": 5,
+    "wr": 0.375,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "excessive"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|high|all": {
+    "n": 6,
+    "wins": 3,
+    "losses": 3,
+    "wr": 0.5,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "high"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|low|all": {
+    "n": 22,
+    "wins": 12,
+    "losses": 10,
+    "wr": 0.545,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "LONG|MOMENTUM|BTC_RANGE_CHOP|moderate|all": {
+    "n": 12,
+    "wins": 9,
+    "losses": 3,
+    "wr": 0.75,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "moderate"
+    }
+  },
+  "LONG|MOMENTUM|BTC_SWITCH_RISK|low|all": {
+    "n": 11,
+    "wins": 6,
+    "losses": 5,
+    "wr": 0.545,
+    "source": "all",
+    "dims": {
+      "direction": "LONG",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_SWITCH_RISK",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|excessive|all": {
+    "n": 9,
+    "wins": 4,
+    "losses": 5,
+    "wr": 0.444,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_CONTINUATION|high|all": {
+    "n": 6,
+    "wins": 5,
+    "losses": 1,
+    "wr": 0.833,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_BEAR_EXHAUSTION|high|all": {
+    "n": 14,
+    "wins": 12,
+    "losses": 2,
+    "wr": 0.857,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|EARLY|BTC_NEUTRAL_AFTER_BEAR|excessive|all": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|EARLY|BTC_NEUTRAL_AFTER_BEAR|high|all": {
+    "n": 7,
+    "wins": 3,
+    "losses": 4,
+    "wr": 0.429,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "EARLY",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|excessive|all": {
+    "n": 16,
+    "wins": 11,
+    "losses": 5,
+    "wr": 0.688,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|high|all": {
+    "n": 8,
+    "wins": 3,
+    "losses": 5,
+    "wr": 0.375,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|low|all": {
+    "n": 8,
+    "wins": 5,
+    "losses": 3,
+    "wr": 0.625,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_CONTINUATION|moderate|all": {
+    "n": 12,
+    "wins": 7,
+    "losses": 5,
+    "wr": 0.583,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_CONTINUATION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|excessive|all": {
+    "n": 9,
+    "wins": 5,
+    "losses": 4,
+    "wr": 0.556,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|low|all": {
+    "n": 25,
+    "wins": 21,
+    "losses": 4,
+    "wr": 0.84,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_BEAR_EXHAUSTION|moderate|all": {
+    "n": 17,
+    "wins": 13,
+    "losses": 4,
+    "wr": 0.765,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_BEAR_EXHAUSTION",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_ACCUMULATION|low|all": {
+    "n": 11,
+    "wins": 5,
+    "losses": 6,
+    "wr": 0.455,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_ACCUMULATION",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|excessive|all": {
+    "n": 7,
+    "wins": 4,
+    "losses": 3,
+    "wr": 0.571,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "excessive"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|high|all": {
+    "n": 9,
+    "wins": 0,
+    "losses": 9,
+    "wr": 0.0,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "high"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|low|all": {
+    "n": 36,
+    "wins": 23,
+    "losses": 13,
+    "wr": 0.639,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|moderate|all": {
+    "n": 21,
+    "wins": 13,
+    "losses": 8,
+    "wr": 0.619,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "moderate"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_NEUTRAL_AFTER_BEAR|very_low|all": {
+    "n": 7,
+    "wins": 5,
+    "losses": 2,
+    "wr": 0.714,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_NEUTRAL_AFTER_BEAR",
+      "vol_band": "very_low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_RANGE_CHOP|low|all": {
+    "n": 15,
+    "wins": 7,
+    "losses": 8,
+    "wr": 0.467,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "low"
+    }
+  },
+  "SHORT|MOMENTUM|BTC_RANGE_CHOP|moderate|all": {
+    "n": 8,
+    "wins": 5,
+    "losses": 3,
+    "wr": 0.625,
+    "source": "all",
+    "dims": {
+      "direction": "SHORT",
+      "entry_type": "MOMENTUM",
+      "btc_phase": "BTC_RANGE_CHOP",
+      "vol_band": "moderate"
+    }
+  }
+}
