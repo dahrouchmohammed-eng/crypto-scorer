@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.4.3")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.5")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -1236,7 +1236,7 @@ def apply_v6_layer(symbol, direction, technical_score, rr, market_danger_level,
 
     if technical_score < FUTURES_TECH_SCORE_GATE and force_futures_check:
         logger.info(
-            "V6.5.4.3 force futures check %s: tech score %.1f < gate %.1f (%s)",
+            "V6.5.5 force futures check %s: tech score %.1f < gate %.1f (%s)",
             symbol, technical_score, FUTURES_TECH_SCORE_GATE, force_reason or "beta candidate"
         )
 
@@ -1447,7 +1447,7 @@ def compute_btc_market_state_details(market_details):
             f"var2h={var_2h:+.2f}>{BTC_BULL_IMPULSE_VAR2H}, rsi={rsi:.1f}>{BTC_BULL_IMPULSE_RSI}"
         )
 
-    # v6.5.4.3 — Rejet haussier court terme :
+    # v6.5.5 — Rejet haussier court terme :
     # BTC peut rester "bullish" sur 4h après un rebond, tout en rejetant déjà
     # la résistance sur 2h/30m. Ce cas doit être séparé de BTC_BULL_SOFT
     # pour éviter d'autoriser des LONG Telegram dans une phase de reflux.
@@ -1457,7 +1457,7 @@ def compute_btc_market_state_details(market_details):
             f"bullish 4h mais rejet CT: var2h={var_2h:+.2f}<-0.3 var30m={var_30m:+.2f}<-0.2"
         )
 
-    # v6.5.4.3 — BTC_BULL_SOFT n'est accepté que si le court terme ne
+    # v6.5.5 — BTC_BULL_SOFT n'est accepté que si le court terme ne
     # contredit pas la lecture 4h / RSI. L'ancienne condition `regime == bullish`
     # seule était trop large pendant les rejets de résistance.
     if (
@@ -2367,7 +2367,7 @@ def cap_signal_count(candidates, market_regime, data_source_run):
     Python reste maître de la décision : GPT ne fait que recopier ce qui reste.
     L'ordre (tri par score décroissant) est déjà appliqué en amont.
 
-    v6.5.4.3 :
+    v6.5.5 :
     - ouverture beta d'un seul bucket SHORT vers Telegram ;
     - max 1 SHORT_MOMENTUM_CONTINUATION_PREMIUM par run.
     """
@@ -2550,7 +2550,7 @@ def apply_historical_performance_guard(
     volume_quality=None,
 ):
     """
-    v6.5.4.3 — Historical Performance Guard.
+    v6.5.5 — Historical Performance Guard.
 
     - Bloque/downgrade les CANDIDAT si la signature historique est mauvaise.
     - Promeut uniquement les WATCHLIST beta explicitement autorisées.
@@ -2579,7 +2579,7 @@ def apply_historical_performance_guard(
     if hist:
         hist_note = f"hist={hist.get('key')} n={hist.get('n')} wr={float(hist.get('wr', 0)):.1%}"
 
-    # v6.5.4.3 — Blocage Telegram LONG sur phases BTC post-impulsion / rejet.
+    # v6.5.5 — Blocage Telegram LONG sur phases BTC post-impulsion / rejet.
     # Important : on downgrade en WATCHLIST, pas en REJET, pour conserver la
     # mesure historique des LONG bloqués dans WATCHLIST_LOG.
     LONG_BLOCK_PHASES = {
@@ -2595,7 +2595,7 @@ def apply_historical_performance_guard(
         regime_rule_applied = f"V6542_LONG_BLOCKED_{btc_phase}"
         risk_guard_reason = f"LONG Telegram bloqué en {btc_phase}"
         telegram_rule_notes = f"Telegram LONG bloqué: btc_phase={btc_phase}"
-        decision_explain = f"WATCHLIST v6.5.4.3 : LONG bloqué Telegram — btc_phase={btc_phase}"
+        decision_explain = f"WATCHLIST v6.5.5 : LONG bloqué Telegram — btc_phase={btc_phase}"
         actions.append(f"long_blocked_{btc_phase.lower()}")
 
     # P5 — blocage Telegram en BTC_NEUTRAL_AFTER_BULL : phase tracker v49 dangereuse.
@@ -2607,11 +2607,11 @@ def apply_historical_performance_guard(
         regime_rule_applied = "V654_BTC_NEUTRAL_AFTER_BULL_BLOCK"
         risk_guard_reason = "BTC_NEUTRAL_AFTER_BULL mauvais historique"
         telegram_rule_notes = "Telegram bloqué: BTC_NEUTRAL_AFTER_BULL ≈33% WR tracker v49"
-        decision_explain = "WATCHLIST v6.5.4.3 : Telegram bloqué en BTC_NEUTRAL_AFTER_BULL, contexte historiquement faible."
+        decision_explain = "WATCHLIST v6.5.5 : Telegram bloqué en BTC_NEUTRAL_AFTER_BULL, contexte historiquement faible."
         actions.append("block_btc_neutral_after_bull")
 
     # P4 — LONG_PREMIUM durci : volume + futures immédiats + participation.
-    # v6.5.4.3 corrige le cas observé ETH : LONG_PREMIUM Telegram alors que
+    # v6.5.5 corrige le cas observé ETH : LONG_PREMIUM Telegram alors que
     # les futures n'étaient pas calculées (tech score juste sous FUTURES_TECH_SCORE_GATE)
     # et que la participation était faible.
     if flag == "CANDIDAT" and signal_quality_bucket == "LONG_PREMIUM":
@@ -2646,7 +2646,7 @@ def apply_historical_performance_guard(
             regime_rule_applied = "V6541_LONG_PREMIUM_NO_FUTURES_GUARD" if (futures_zone == "unavailable" or fut_score is None) else "V6541_LONG_PREMIUM_FUTURES_GUARD"
             risk_guard_reason = "long premium sans futures" if (futures_zone == "unavailable" or fut_score is None) else "long premium futures/participation guard"
             telegram_rule_notes = "LONG_PREMIUM downgradé: " + " | ".join(long_blockers)
-            decision_explain = "WATCHLIST v6.5.4.3 : LONG_PREMIUM downgradé (" + "; ".join(long_blockers) + ")."
+            decision_explain = "WATCHLIST v6.5.5 : LONG_PREMIUM downgradé (" + "; ".join(long_blockers) + ")."
             actions.append("downgrade_long_premium_v6541")
 
     # R_P1 — Promotion immédiate : SHORT_MOMENTUM_BEAR_EXHAUSTION_BETA.
@@ -2674,7 +2674,7 @@ def apply_historical_performance_guard(
         regime_rule_applied = "V654_SHORT_MOMENTUM_BEAR_EXHAUSTION_BETA"
         telegram_rule_notes = "WATCHLIST→Telegram beta: SHORT MOMENTUM BTC_BEAR_EXHAUSTION"
         decision_explain = (
-            f"CANDIDAT v6.5.4.3 beta : SHORT_MOMENTUM_BEAR_EXHAUSTION_BETA "
+            f"CANDIDAT v6.5.5 beta : SHORT_MOMENTUM_BEAR_EXHAUSTION_BETA "
             f"validé par btc30m={btc_var_30m:+.2f}%, PR={pr:.3f}, volume={vol:.2f}x, late={late:.1f}."
         )
         actions.append("promote_short_momentum_bear_exhaustion_beta")
@@ -2700,7 +2700,7 @@ def apply_historical_performance_guard(
         risk_guard_reason = "long early neutral beta"
         regime_rule_applied = "V654_LONG_EARLY_NEUTRAL_BETA"
         telegram_rule_notes = "WATCHLIST→Telegram beta: LONG EARLY neutral score<60"
-        decision_explain = f"CANDIDAT v6.5.4.3 beta : LONG_EARLY_NEUTRAL_BETA en {btc_phase}, score={global_score:.1f}."
+        decision_explain = f"CANDIDAT v6.5.5 beta : LONG_EARLY_NEUTRAL_BETA en {btc_phase}, score={global_score:.1f}."
         actions.append("promote_long_early_neutral_beta")
 
     # P5 — Promotion historique préparée mais flaggée par env : LONG MOMENTUM BTC_BULL_SOFT volume low.
@@ -2724,10 +2724,10 @@ def apply_historical_performance_guard(
         risk_guard_reason = "historical long bullsoft low volume beta"
         regime_rule_applied = "V654_LONG_MOMENTUM_BULLSOFT_LOW_BETA"
         telegram_rule_notes = "Historical beta: LONG MOMENTUM BTC_BULL_SOFT volume low"
-        decision_explain = f"CANDIDAT v6.5.4.3 beta historique : LONG BTC_BULL_SOFT volume low. {hist_note}"
+        decision_explain = f"CANDIDAT v6.5.5 beta historique : LONG BTC_BULL_SOFT volume low. {hist_note}"
         actions.append("promote_long_momentum_bullsoft_low_beta")
 
-    # v6.5.4.3 — Failsafe : aucun bucket beta Telegram ne part sans dérivés exploitables.
+    # v6.5.5 — Failsafe : aucun bucket beta Telegram ne part sans dérivés exploitables.
     # Le calcul futures est forcé en amont pour ces buckets. Si les données restent
     # indisponibles malgré ce force-check, on garde le signal en WATCHLIST diagnostic.
     beta_bucket_names = {
@@ -2751,7 +2751,7 @@ def apply_historical_performance_guard(
             risk_guard_reason = "beta sans dérivés exploitables"
             telegram_rule_notes = "Beta Telegram downgradé: futures/derivatives indisponibles malgré force-check"
             decision_explain = (
-                f"WATCHLIST v6.5.4.3 : bucket beta downgradé — "
+                f"WATCHLIST v6.5.5 : bucket beta downgradé — "
                 f"futures_zone={futures_zone}, fut_score={fut_score}, "
                 f"derivatives_alignment={derivatives_alignment}."
             )
@@ -2770,7 +2770,7 @@ def apply_historical_performance_guard(
             regime_rule_applied = "V654_HISTORICAL_REJECT"
             risk_guard_reason = "historical bad match"
             telegram_rule_notes = f"Historical reject: {hist_note}"
-            decision_explain = f"REJET v6.5.4.3 : signature historique trop faible ({hist_note})."
+            decision_explain = f"REJET v6.5.5 : signature historique trop faible ({hist_note})."
             actions.append("historical_reject")
         elif n >= HIST_BLOCK_MIN_N and wr <= HIST_BLOCK_MAX_WR:
             flag = "WATCHLIST"
@@ -2780,7 +2780,7 @@ def apply_historical_performance_guard(
             regime_rule_applied = "V654_HISTORICAL_DOWNGRADE"
             risk_guard_reason = "historical weak match"
             telegram_rule_notes = f"Historical downgrade: {hist_note}"
-            decision_explain = f"WATCHLIST v6.5.4.3 : signature historique faible ({hist_note})."
+            decision_explain = f"WATCHLIST v6.5.5 : signature historique faible ({hist_note})."
             actions.append("historical_downgrade")
 
     return {
@@ -2828,7 +2828,7 @@ def apply_contextual_v652_rules(
     derivatives_alignment,
 ):
     """
-    v6.5.4.3 — Préqualification contextuelle, appelée AVANT le bucket engine.
+    v6.5.5 — Préqualification contextuelle, appelée AVANT le bucket engine.
 
     Rôle :
     - ne remplace pas le score brut ;
@@ -2887,7 +2887,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = SHORT_MOMENTUM_BETA_LEVERAGE_CAP
         risk_guard = "short momentum continuation premium beta"
         decision = (
-            "CANDIDAT v6.5.4.3 beta : SHORT_MOMENTUM_CONTINUATION_PREMIUM "
+            "CANDIDAT v6.5.5 beta : SHORT_MOMENTUM_CONTINUATION_PREMIUM "
             f"validé par {btc_phase}, btc30m={btc_var_30m:+.2f}%, "
             f"late={late:.1f}, PR={pr:.3f}, volume={vol:.2f}x, crowding={crowding_state}."
         )
@@ -2911,7 +2911,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "long late momentum"
         decision = decision or (
-            f"WATCHLIST v6.5.4.3 : LONG_LATE_MOMENTUM downgradé "
+            f"WATCHLIST v6.5.5 : LONG_LATE_MOMENTUM downgradé "
             f"(btc_phase={btc_phase}, late={late:.1f}, PR={pr:.3f}, volume={vol:.2f}x)."
         )
         notes.append("LONG late momentum downgradé sauf bull pullback très propre")
@@ -2930,7 +2930,7 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = "short early mauvais contexte BTC"
             decision = (
-                f"REJET v6.5.4.3 : SHORT_EARLY en {btc_phase}, "
+                f"REJET v6.5.5 : SHORT_EARLY en {btc_phase}, "
                 "contexte BTC défavorable au short anticipé."
             )
             notes.append("SHORT_EARLY rejeté en contexte bull/switch")
@@ -2942,8 +2942,8 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = risk_guard or "short early diagnostic uniquement"
             decision = decision or (
-                f"WATCHLIST_DIAG v6.5.4.3 : SHORT_EARLY en {btc_phase} avec btc30m négatif. "
-                "Diagnostic uniquement, pas premium en v6.5.4.3."
+                f"WATCHLIST_DIAG v6.5.5 : SHORT_EARLY en {btc_phase} avec btc30m négatif. "
+                "Diagnostic uniquement, pas premium en v6.5.5."
             )
             notes.append("SHORT_EARLY bear context conservé en diagnostic seulement")
         else:
@@ -2954,7 +2954,7 @@ def apply_contextual_v652_rules(
             force_leverage_cap = min(force_leverage_cap or 3, 3)
             risk_guard = risk_guard or "short early non premium"
             decision = decision or (
-                f"WATCHLIST v6.5.4.3 : SHORT_EARLY non premium "
+                f"WATCHLIST v6.5.5 : SHORT_EARLY non premium "
                 f"(btc_phase={btc_phase}, btc30m={btc_var_30m:+.2f}%)."
             )
             notes.append("SHORT_PREMIUM_CANDIDATE générique désactivé")
@@ -2977,7 +2977,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "long strong conditions premium insuffisantes"
         decision = decision or (
-            f"WATCHLIST v6.5.4.3 : LONG strong non premium "
+            f"WATCHLIST v6.5.5 : LONG strong non premium "
             f"(setup={setup_family}, maturity={setup_maturity}, score={global_score:.1f}, "
             f"late={late:.1f}, PR={pr:.3f})."
         )
@@ -2992,7 +2992,7 @@ def apply_contextual_v652_rules(
         force_leverage_cap = min(force_leverage_cap or 3, 3)
         risk_guard = risk_guard or "volume élevé sur setup tardif"
         decision = decision or (
-            f"WATCHLIST v6.5.4.3 : volume élevé ({vol:.2f}x) sur setup {setup_maturity}, "
+            f"WATCHLIST v6.5.5 : volume élevé ({vol:.2f}x) sur setup {setup_maturity}, "
             "risque de participation tardive/crowded."
         )
         notes.append("volume >1.20 + late/exhausted downgradé")
@@ -3030,7 +3030,7 @@ def apply_contextual_v652_rules(
         notes.append("LONG_PREMIUM BTC_BULL_SOFT guard: " + " | ".join(bullsoft_longpremium_blockers))
 
     return {
-        "version": "v6.5.4.3",
+        "version": "v6.5.5",
         "actions": actions,
         "forced_bucket": forced_bucket,
         "force_flag": force_flag,
@@ -3213,10 +3213,10 @@ def apply_contextual_bucket_engine(
             regime_rule_applied = "R2_SHORT_MOMENTUM_BULLISH_REJECT"
             telegram_rule_notes = f"SHORT MOMENTUM rejeté: BTC état {btc_market_state}"
         elif is_bearish_short_context:
-            # Contexte bearish / after-bear : garder en diagnostic, sauf si le layer v6.5.4.3
+            # Contexte bearish / after-bear : garder en diagnostic, sauf si le layer v6.5.5
             # l'a déjà préqualifié en SHORT_MOMENTUM_CONTINUATION_PREMIUM beta.
             decision_explain = (
-                f"WATCHLIST_DIAG v6.5.4.3 : SHORT MOMENTUM en {btc_phase} "
+                f"WATCHLIST_DIAG v6.5.5 : SHORT MOMENTUM en {btc_phase} "
                 f"(market_regime={market_regime}, btc30m={btc_var_30m:+.2f}%). "
                 "Diagnostic bearish/after-bear ; pas Telegram sans préqualification beta stricte."
             )
@@ -3226,7 +3226,7 @@ def apply_contextual_bucket_engine(
         else:
             # Range/neutral non bearish : bloquer Telegram sans wording neutral trompeur.
             decision_explain = (
-                f"WATCHLIST v6.5.4.3 : SHORT MOMENTUM non exécutable hors contexte beta "
+                f"WATCHLIST v6.5.5 : SHORT MOMENTUM non exécutable hors contexte beta "
                 f"(market_regime={market_regime}, btc_phase={btc_phase}, btc30m={btc_var_30m:+.2f}%)."
             )
             signal_quality_bucket = "WATCHLIST_SHORT_MOMENTUM_BLOCKED"
@@ -3293,12 +3293,12 @@ def apply_contextual_bucket_engine(
             # bearish : 58% WR (12t) — rebond possible sur trend forte
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong watchlist premium"
             decision_explain = (
-                f"WATCHLIST v6.5.4.3 : LONG trend strong en {btc_market_state} "
+                f"WATCHLIST v6.5.5 : LONG trend strong en {btc_market_state} "
                 "reclassé diagnostic uniquement (R3 premium désactivé après tracker v49)."
             )
             signal_quality_bucket = "WATCHLIST_LONG_STRONG_DIAGNOSTIC"
             regime_rule_applied = "V654_R3_LONG_STRONG_DIAGNOSTIC"
-            telegram_rule_notes = "LONG strong: diagnostic uniquement, premium désactivé v6.5.4.3"
+            telegram_rule_notes = "LONG strong: diagnostic uniquement, premium désactivé v6.5.5"
         else:
             # neutral : 44% WR — review justifié
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long trend strong late review"
@@ -3382,7 +3382,7 @@ def apply_contextual_bucket_engine(
     v652_actions = set(v652_context.get("actions", []))
 
     # Correction bullsoft Signals : si le bucket engine vient de créer LONG_PREMIUM
-    # mais que le contexte v6.5.4.3 détecte un LONG MOMENTUM fragile, downgrade.
+    # mais que le contexte v6.5.5 détecte un LONG MOMENTUM fragile, downgrade.
     if signal_quality_bucket == "LONG_PREMIUM" and "downgrade_bullsoft_longpremium" in v652_actions:
         flag = "WATCHLIST"
         confidence = min(confidence, 60)
@@ -3393,11 +3393,11 @@ def apply_contextual_bucket_engine(
         blockers = v652_context.get("bullsoft_longpremium_blockers", [])
         telegram_rule_notes = "LONG_PREMIUM BTC_BULL_SOFT downgradé: " + " | ".join(blockers)
         decision_explain = (
-            "WATCHLIST v6.5.4.3 : LONG_PREMIUM en BTC_BULL_SOFT downgradé "
+            "WATCHLIST v6.5.5 : LONG_PREMIUM en BTC_BULL_SOFT downgradé "
             f"({'; '.join(blockers)})."
         )
 
-    # Overrides généraux v6.5.4.3 : s'appliquent si pas de hard REJET déjà posé,
+    # Overrides généraux v6.5.5 : s'appliquent si pas de hard REJET déjà posé,
     # sauf short early bull context qui est explicitement un REJET contextuel.
     elif v652_context.get("force_flag"):
         requested_flag = v652_context.get("force_flag")
@@ -3423,7 +3423,7 @@ def apply_contextual_bucket_engine(
                 max_leverage = min(max_leverage, SHORT_MOMENTUM_BETA_LEVERAGE_CAP)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # RÈGLE 6 — Porte Telegram stricte (v6.5.4.3)
+    # RÈGLE 6 — Porte Telegram stricte (v6.5.5)
     # Buckets autorisés : LONG_PREMIUM + SHORT_MOMENTUM_CONTINUATION_PREMIUM beta.
     # ═══════════════════════════════════════════════════════════════════════
     if flag == "CANDIDAT" and signal_quality_bucket not in TELEGRAM_ALLOWED_BUCKETS:
@@ -3437,7 +3437,7 @@ def apply_contextual_bucket_engine(
         risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "telegram bucket non premium"
         decision_explain = (
             f"WATCHLIST v6.4.4 : CANDIDAT standard bloqué Telegram "
-            f"car bucket={signal_quality_bucket}, bucket non autorisé Telegram v6.5.4.3."
+            f"car bucket={signal_quality_bucket}, bucket non autorisé Telegram v6.5.5."
         )
 
     # ── Caps finaux par flag (appliqués après tous les risk guards) ───────────
@@ -3451,8 +3451,8 @@ def apply_contextual_bucket_engine(
         confidence   = min(confidence, 55)
         max_leverage = min(max_leverage, 3)
 
-    # ── v6.5.4.3 — Nettoyage final buckets premium incohérents ────────────────
-    # Cas observé : un hard reject post-v6.5.4.3 gardait parfois un bucket
+    # ── v6.5.5 — Nettoyage final buckets premium incohérents ────────────────
+    # Cas observé : un hard reject post-v6.5.5 gardait parfois un bucket
     # WATCHLIST_PREMIUM_* hérité des règles v6.4.4. Le comportement était bon
     # mais le tracker devenait trompeur. Un REJET ne doit jamais rester premium.
     if flag == "REJET" and str(signal_quality_bucket).startswith("WATCHLIST_PREMIUM_"):
@@ -3462,14 +3462,14 @@ def apply_contextual_bucket_engine(
             telegram_rule_notes = "Bucket premium nettoyé: REJET LONG_LATE_MOMENTUM"
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long late momentum rejeté"
             if decision_explain.startswith("WATCHLIST") or "WATCHLIST_PREMIUM" in decision_explain:
-                decision_explain = "REJET v6.5.4.3 : LONG_LATE_MOMENTUM incompatible avec un bucket premium."
+                decision_explain = "REJET v6.5.5 : LONG_LATE_MOMENTUM incompatible avec un bucket premium."
         elif "downgrade_long_strong_diagnostic" in v652_actions:
             signal_quality_bucket = "REJECT_LONG_STRONG_DIAGNOSTIC"
             regime_rule_applied = "V653_REJECT_LONG_STRONG_BUCKET_CLEANUP"
             telegram_rule_notes = "Bucket premium nettoyé: REJET LONG_STRONG diagnostic"
             risk_guard_reason = risk_guard_reason if risk_guard_reason != "aucun" else "long strong diagnostic rejeté"
             if decision_explain.startswith("WATCHLIST") or "WATCHLIST_PREMIUM" in decision_explain:
-                decision_explain = "REJET v6.5.4.3 : LONG strong ne remplit pas les conditions premium."
+                decision_explain = "REJET v6.5.5 : LONG strong ne remplit pas les conditions premium."
         else:
             signal_quality_bucket = "REJECT_PREMIUM_BUCKET_CLEANUP"
             regime_rule_applied = "V653_REJECT_PREMIUM_BUCKET_CLEANUP"
@@ -3480,7 +3480,7 @@ def apply_contextual_bucket_engine(
         regime_rule_applied = "V653_WATCHLIST_LONG_STRONG_DIAGNOSTIC_BUCKET_CLEANUP"
         telegram_rule_notes = "LONG strong downgradé: diagnostic, non premium"
         if "WATCHLIST_PREMIUM" in decision_explain:
-            decision_explain = "WATCHLIST v6.5.4.3 : LONG strong downgradé en diagnostic, conditions premium insuffisantes."
+            decision_explain = "WATCHLIST v6.5.5 : LONG strong downgradé en diagnostic, conditions premium insuffisantes."
 
     executable_signal = (flag == "CANDIDAT")
 
@@ -4159,7 +4159,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "volume_relatif": relative_vol
     }
 
-    # ── v6.5.4.3 — Force futures check pour tout bucket beta Telegram potentiel ──
+    # ── v6.5.5 — Force futures check pour tout bucket beta Telegram potentiel ──
     # Objectif : éviter un signal beta "borgne" envoyé sans OI/taker/LS simplement
     # parce que le score technique est juste sous FUTURES_TECH_SCORE_GATE.
     # On ne baisse pas le gate global : seuls les candidats beta explicites forcent
@@ -4451,7 +4451,7 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
             decision_explain  = decision_explain or f"WATCHLIST : short proche du bas de range ({position_range:.3f})."
 
     # Regle 10 : anti-short BTC bullish
-    # v6.5.4.3 : on conserve le guard, mais on évite de tuer préventivement le
+    # v6.5.5 : on conserve le guard, mais on évite de tuer préventivement le
     # futur bucket SHORT_MOMENTUM_CONTINUATION_PREMIUM quand le btc_phase
     # indique déjà range / after-bear / bear-continuation avec btc30m négatif.
     if direction == "SHORT" and market_regime == "bullish" and not hard_reject:
@@ -4580,8 +4580,8 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     max_leverage = v61_decision["max_leverage"]
     decision_explain = v61_decision["decision_explain"]
 
-    # ── v6.5.4.3 — Instrumentation setup/participation AVANT bucket engine ───
-    # v6.5.0 instrumentait ces champs après le bucket engine. En v6.5.4.3 ils
+    # ── v6.5.5 — Instrumentation setup/participation AVANT bucket engine ───
+    # v6.5.0 instrumentait ces champs après le bucket engine. En v6.5.5 ils
     # deviennent des inputs de décision contextuelle, sans modifier le score brut.
     setup_v65 = classify_setup_v65(
         direction=direction,
@@ -5014,9 +5014,9 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 
 
 def validate_decision_config():
-    """Sanity check non bloquant de la configuration décisionnelle v6.4.4."""
+    """Sanity check non bloquant de la configuration décisionnelle v6.5.5."""
     warnings = []
-    if DECISION_VERSION != "v6.5.4.3":
+    if DECISION_VERSION != "v6.5.5":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
@@ -5079,7 +5079,7 @@ validate_decision_config()
 
 
 def run_v6542_regression_tests():
-    """Tests de régression ciblés v6.5.4.3, sans appels réseau."""
+    """Tests de régression ciblés v6.5.5, sans appels réseau."""
     rejection_state, _ = compute_btc_market_state_details({
         "market_regime": "bullish",
         "btc_variation_4h": +0.8,
@@ -5936,8 +5936,16 @@ def _get_klines_window(symbol, start_ts, end_ts):
 
 def _evaluate_one(sig):
     """
-    Évalue un signal DIAGNOSTIC ou OPEN unique.
-    Retourne un dict avec signal_id + champs de mise à jour.
+    v6.5.5 — Outcome Brain / RR evaluator.
+
+    Évalue un signal DIAGNOSTIC ou OPEN unique sans modifier la définition
+    historique WIN/LOSS :
+      - TP1 avant SL => WIN
+      - SL avant TP1 => LOSS
+      - TP1 puis SL => WIN, avec sl_touched=true
+
+    Enrichit aussi la réponse avec les champs RR TP1→TP5 pour alimenter
+    Signals et WATCHLIST_LOG, puis le futur Memory Brain v6.6.
     """
     signal_id = str(sig.get("signal_id", "") or "").strip()
     symbol = normalize_symbol(sig.get("symbol", ""))
@@ -5946,6 +5954,8 @@ def _evaluate_one(sig):
     def _f(key, default=0.0):
         v = sig.get(key, default)
         try:
+            if v is None or v == "":
+                return default
             return float(str(v).replace(",", "."))
         except (TypeError, ValueError):
             return default
@@ -5954,10 +5964,126 @@ def _evaluate_one(sig):
         v = sig.get(key, default)
         return str(v).strip() if v is not None else default
 
+    def _bool_to_sheet(v):
+        # Apps Script / Sheets acceptent bien les booléens JSON natifs.
+        return bool(v)
+
+    def _empty_rr_fields():
+        return {
+            "first_touch": "",
+            "first_outcome": "",
+            "max_tp_reached": 0,
+            "max_rr_reached": 0,
+            "tp1_touched": False,
+            "tp2_touched": False,
+            "tp3_touched": False,
+            "tp4_touched": False,
+            "tp5_touched": False,
+            "sl_touched": False,
+            "tp1_touched_at": "",
+            "tp2_touched_at": "",
+            "tp3_touched_at": "",
+            "tp4_touched_at": "",
+            "tp5_touched_at": "",
+            "sl_touched_at": "",
+            "time_to_tp1_minutes": "",
+            "time_to_tp2_minutes": "",
+            "time_to_tp3_minutes": "",
+            "time_to_tp4_minutes": "",
+            "time_to_tp5_minutes": "",
+            "time_to_sl_minutes": "",
+            "ambiguous_touch": False,
+            "ambiguous_touch_note": "",
+            "rr_fully_resolved": False,
+            "rr_monitoring_status": "",
+            "rr_monitoring_until": "",
+        }
+
+    def _with_rr(base, rr_fields=None):
+        out = dict(base)
+        fields = _empty_rr_fields()
+        if rr_fields:
+            fields.update(rr_fields)
+
+        # v6.5.5.1 — expose un état RR indépendant de outcome.
+        # Cela permet à Apps Script de continuer à repoller les WIN tant que
+        # TP2→TP5 / SL après TP1 peuvent encore arriver dans la fenêtre 72h.
+        outcome_value = str(out.get("outcome") or "OPEN")
+        now_value = out.pop("_now_ts", None)
+        resolve_value = out.pop("_resolve_ts", None)
+        if now_value is not None and resolve_value is not None:
+            fields = _finalize_rr_monitoring(fields, now_value, resolve_value, outcome_value)
+
+        for k in ("tp1_touched", "tp2_touched", "tp3_touched", "tp4_touched", "tp5_touched", "sl_touched", "ambiguous_touch", "rr_fully_resolved"):
+            fields[k] = _bool_to_sheet(fields.get(k))
+        out.update(fields)
+        return out
+
+    def _minutes_from_fill(event_ts, fill_ts):
+        try:
+            if event_ts is None or fill_ts is None:
+                return ""
+            return round((int(event_ts) - int(fill_ts)) / 60, 1)
+        except Exception:
+            return ""
+
+    def _iso(ts):
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat() if ts else ""
+
+    def _finalize_rr_monitoring(rr_fields, now_ts_value, resolve_ts_value, outcome_value):
+        """
+        v6.5.5.1 — Critère explicite pour Apps Script.
+
+        `outcome` reste la compatibilité historique WIN/LOSS/OPEN.
+        `rr_fully_resolved` indique si Apps Script peut arrêter de repoller
+        la ligne pour enrichir TP2→TP5 / SL après TP1.
+        """
+        try:
+            max_tp = int(rr_fields.get("max_tp_reached") or 0)
+        except Exception:
+            max_tp = 0
+        sl_touched = bool(rr_fields.get("sl_touched"))
+        deadline_reached = bool(resolve_ts_value and int(now_ts_value) >= int(resolve_ts_value))
+        no_execution_terminal = outcome_value in ("NO_FILL", "EXPIRED")
+
+        fully_resolved = bool(sl_touched or max_tp >= 5 or deadline_reached or no_execution_terminal)
+        if fully_resolved:
+            if sl_touched:
+                status = "RR_STOPPED_BY_SL"
+            elif max_tp >= 5:
+                status = "RR_MAX_TP_REACHED"
+            elif no_execution_terminal:
+                status = f"RR_{outcome_value}"
+            else:
+                status = "RR_RESOLVE_DEADLINE_REACHED"
+        else:
+            status = "RR_MONITORING" if outcome_value in ("OPEN", "WIN") else f"RR_{outcome_value}"
+
+        rr_fields["rr_fully_resolved"] = fully_resolved
+        rr_fields["rr_monitoring_status"] = status
+        rr_fields["rr_monitoring_until"] = _iso(resolve_ts_value) if resolve_ts_value else ""
+        return rr_fields
+
     entry_low = _f("entry_low")
     entry_high = _f("entry_high")
     stop_loss = _f("stop_loss")
-    tp1 = _f("tp1")
+
+    # TP1 reste obligatoire pour conserver la logique WIN/LOSS historique.
+    tp_values = {
+        1: _f("tp1"),
+        2: _f("tp2", None),
+        3: _f("tp3", None),
+        4: _f("tp4", None),
+        5: _f("tp5", None),
+    }
+    rr_values = {
+        1: _f("rr_tp1", 1.0),
+        2: _f("rr_tp2", 2.0),
+        3: _f("rr_tp3", 3.0),
+        4: _f("rr_tp4", 5.0),
+        5: _f("rr_tp5", _f("target_rr", 5.0)),
+    }
+    tp1 = tp_values[1]
 
     now_ts = int(time.time())
     timestamp_str = _s("timestamp")
@@ -5965,18 +6091,8 @@ def _evaluate_one(sig):
     resolve_dl = _s("resolve_deadline")
     filled_at_existing = _s("filled_at")
 
-    # ── v6.4.0 — emit_ts : signal_id > timestamp_sheet > fill_deadline ──────
-    #
-    # Ordre de priorité :
-    #   1. signal_id epoch Unix  — généré par Python, jamais retouché par Sheets/Apps Script
-    #   2. timestamp_sheet       — fallback si signal_id sans epoch
-    #   3. fill_deadline - 4h    — fallback de secours si timestamp incohérent (v6.3.9)
-    #
-    # Le timestamp Google Sheets subit un décalage +7h observé (double-conversion
-    # timezone dans la chaîne Make → Sheets → Apps Script → JSON). Le Unix timestamp
-    # dans signal_id contourne complètement cette chaîne.
-
-    emit_from_id    = _emit_ts_from_signal_id(signal_id)
+    # ── emit_ts : signal_id > timestamp_sheet > fill_deadline ───────────────
+    emit_from_id = _emit_ts_from_signal_id(signal_id)
     emit_from_sheet = _parse_eval_ts(timestamp_str, now_ts - 3600)
 
     logger.info("eval %s: timestamp_raw=%r emit_from_id=%s emit_from_sheet=%s",
@@ -5984,58 +6100,73 @@ def _evaluate_one(sig):
                 _fmt_eval_ts(emit_from_id), _fmt_eval_ts(emit_from_sheet))
 
     if emit_from_id:
-        emit_ts     = emit_from_id
+        emit_ts = emit_from_id
         emit_source = "signal_id"
     else:
-        emit_ts     = emit_from_sheet
+        emit_ts = emit_from_sheet
         emit_source = "timestamp_sheet"
 
     fill_dl_received = _parse_eval_ts(fill_dl, None)
     if fill_dl_received:
         ecart = abs(fill_dl_received - (emit_ts + FILL_WINDOW_SECONDS))
         if not emit_from_id and ecart > 15 * 60:
-            # Correction v6.3.9 : timestamp_sheet incohérent, reconstruire depuis fill_deadline
             emit_ts_corrige = fill_dl_received - FILL_WINDOW_SECONDS
             logger.warning(
-                "eval %s: emit_ts incohérent (source=%s ecart=%ds) — "
-                "correction: %s → %s (fill_deadline rebuild)",
+                "eval %s: emit_ts incohérent (source=%s ecart=%ds) — correction: %s → %s (fill_deadline rebuild)",
                 signal_id, emit_source, ecart,
                 _fmt_eval_ts(emit_ts), _fmt_eval_ts(emit_ts_corrige)
             )
-            emit_ts     = emit_ts_corrige
+            emit_ts = emit_ts_corrige
             emit_source = "fill_deadline_rebuild"
 
-    fill_ts    = emit_ts + FILL_WINDOW_SECONDS
-    resolve_ts = emit_ts + RESOLVE_WINDOW_SECONDS
+    fill_ts = _parse_eval_ts(fill_dl, None) or (emit_ts + FILL_WINDOW_SECONDS)
+    resolve_ts = _parse_eval_ts(resolve_dl, None) or (emit_ts + RESOLVE_WINDOW_SECONDS)
     existing_filled_ts = _parse_eval_ts(filled_at_existing, None)
 
-    if not symbol or direction not in ("LONG", "SHORT"):
-        return {"signal_id": signal_id, "outcome": "OPEN",
-                "evaluation_note": "signal invalide pour évaluation",
-                "bars_checked": 0, "filled_at": filled_at_existing,
-                "closed_at": "", "exit_price": ""}
+    if not symbol or direction not in ("LONG", "SHORT") or entry_low <= 0 or entry_high <= 0 or stop_loss <= 0 or tp1 <= 0:
+        # v6.5.5.1 — signal structurellement non évaluable.
+        # On le marque RR résolu immédiatement pour éviter qu'Apps Script
+        # le repolle inutilement pendant toute la fenêtre 72h.
+        # `outcome` reste OPEN pour ne pas inventer un WIN/LOSS/NO_FILL,
+        # mais `rr_fully_resolved=true` donne le vrai critère d'arrêt du polling.
+        return _with_rr({
+            "signal_id": signal_id,
+            "outcome": "OPEN",
+            "evaluation_note": "signal invalide pour évaluation",
+            "bars_checked": 0,
+            "filled_at": filled_at_existing,
+            "closed_at": "",
+            "exit_price": "",
+        }, {
+            "rr_fully_resolved": True,
+            "rr_monitoring_status": "RR_INVALID_SIGNAL",
+            "rr_monitoring_until": "",
+        })
 
-    # Fenêtre à charger : jusqu'à maintenant ou resolve_deadline.
     eval_end_ts = min(now_ts, resolve_ts)
-
-    # Pour une ligne déjà OPEN avec filled_at, on démarre au fill existant.
-    # Pour une ligne DIAGNOSTIC/non remplie, on démarre à timestamp.
     query_start_ts = existing_filled_ts if existing_filled_ts else emit_ts
     klines = _get_klines_window(symbol, query_start_ts, eval_end_ts)
 
     if not klines:
-        return {"signal_id": signal_id, "outcome": "OPEN",
-                "evaluation_note": (
-                    f"klines indisponibles, nouvelle tentative plus tard"
-                    f" | debug: emit={_fmt_eval_ts(emit_ts)}"
-                    f" fill_dl={_fmt_eval_ts(fill_ts)}"
-                    f" now={_fmt_eval_ts(now_ts)}"
-                    f" query_start={_fmt_eval_ts(query_start_ts)}"
-                    f" eval_end={_fmt_eval_ts(eval_end_ts)}"
-                ),
-                "bars_checked": 0,
-                "filled_at": filled_at_existing if existing_filled_ts else "",
-                "closed_at": "", "exit_price": ""}
+        return _with_rr({
+            "signal_id": signal_id,
+            "outcome": "OPEN",
+            "evaluation_note": (
+                f"klines indisponibles, nouvelle tentative plus tard"
+                f" | debug: emit={_fmt_eval_ts(emit_ts)}"
+                f" fill_dl={_fmt_eval_ts(fill_ts)}"
+                f" resolve_dl={_fmt_eval_ts(resolve_ts)}"
+                f" now={_fmt_eval_ts(now_ts)}"
+                f" query_start={_fmt_eval_ts(query_start_ts)}"
+                f" eval_end={_fmt_eval_ts(eval_end_ts)}"
+            ),
+            "bars_checked": 0,
+            "filled_at": filled_at_existing if existing_filled_ts else "",
+            "closed_at": "",
+            "exit_price": "",
+            "_now_ts": now_ts,
+            "_resolve_ts": resolve_ts
+        })
 
     bars_checked = len(klines)
     fill_price = round((entry_low + entry_high) / 2, 8)
@@ -6043,7 +6174,7 @@ def _evaluate_one(sig):
     # ── Phase 1 : fill ──────────────────────────────────────────────────────
     if existing_filled_ts:
         filled_at_ts = existing_filled_ts
-        filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+        filled_at_iso = _iso(filled_at_ts)
         fill_time_min, fill_time_note = _safe_fill_time_minutes(filled_at_ts, emit_ts)
         post_fill = [bar for bar in klines if int(bar["ts"]) > filled_at_ts]
     else:
@@ -6051,7 +6182,7 @@ def _evaluate_one(sig):
         fill_bar_idx = None
 
         for i, bar in enumerate(klines):
-            if bar["ts"] > fill_ts:
+            if int(bar["ts"]) > fill_ts:
                 break
             if bar["low"] <= entry_high and bar["high"] >= entry_low:
                 filled_at_ts = int(bar["ts"])
@@ -6059,7 +6190,7 @@ def _evaluate_one(sig):
                 break
 
         if filled_at_ts is None and now_ts >= fill_ts:
-            return {
+            return _with_rr({
                 "signal_id": signal_id,
                 "outcome": "NO_FILL",
                 "filled_at": "",
@@ -6067,14 +6198,16 @@ def _evaluate_one(sig):
                 "exit_price": "",
                 "bars_checked": bars_checked,
                 "evaluation_note": (
-                    f"zone [{entry_low}–{entry_high}] non touchée en 4h"
+                    f"zone [{entry_low}–{entry_high}] non touchée dans la fenêtre de fill"
                     + _nofill_debug_note(klines, emit_ts, fill_ts, entry_low, entry_high, direction)
                 ),
-                "fill_time_minutes": ""
-            }
+                "fill_time_minutes": "",
+                "_now_ts": now_ts,
+                "_resolve_ts": resolve_ts
+            })
 
         if filled_at_ts is None:
-            return {
+            return _with_rr({
                 "signal_id": signal_id,
                 "outcome": "OPEN",
                 "filled_at": "",
@@ -6087,89 +6220,166 @@ def _evaluate_one(sig):
                     + f" | now={_fmt_eval_ts(now_ts)} fill_dl={_fmt_eval_ts(fill_ts)}"
                     + f" now<fill_ts={'oui' if now_ts < fill_ts else 'non'}"
                     + f" ts_raw={repr(timestamp_str)}"
-                )
-            }
+                ),
+                "_now_ts": now_ts,
+                "_resolve_ts": resolve_ts
+            })
 
-        filled_at_iso = datetime.fromtimestamp(filled_at_ts, tz=timezone.utc).isoformat()
+        filled_at_iso = _iso(filled_at_ts)
         fill_time_min, fill_time_note = _safe_fill_time_minutes(filled_at_ts, emit_ts)
         post_fill = klines[fill_bar_idx + 1:]
 
-    # ── Phase 2 : SL / TP1 après fill ───────────────────────────────────────
+    # ── Phase 2 : RR Outcome TP1→TP5 + SL ───────────────────────────────────
+    rr = _empty_rr_fields()
+    first_outcome = None
+    outcome = "OPEN"
+    closed_at = ""
+    exit_price = ""
     prev_close = fill_price
+    note_parts = []
+
+    # TPs valides dans l'ordre. TP1 obligatoire, TP2→TP5 optionnels.
+    valid_tps = []
+    for idx in range(1, 6):
+        tp = tp_values.get(idx)
+        if tp is None or tp <= 0:
+            continue
+        valid_tps.append((idx, float(tp), float(rr_values.get(idx) or idx)))
+
     for bar in post_fill:
         ts = int(bar["ts"])
         if ts > resolve_ts:
             break
 
-        bar_hits_sl = (direction == "LONG" and bar["low"] <= stop_loss) or \
-                      (direction == "SHORT" and bar["high"] >= stop_loss)
-        bar_hits_tp = (direction == "LONG" and bar["high"] >= tp1) or \
-                      (direction == "SHORT" and bar["low"] <= tp1)
+        bar_hits_sl = (
+            (direction == "LONG" and bar["low"] <= stop_loss) or
+            (direction == "SHORT" and bar["high"] >= stop_loss)
+        )
+        hit_tp_indices = []
+        for idx, tp, rr_val in valid_tps:
+            hit_tp = (
+                (direction == "LONG" and bar["high"] >= tp) or
+                (direction == "SHORT" and bar["low"] <= tp)
+            )
+            if hit_tp:
+                hit_tp_indices.append((idx, tp, rr_val))
 
-        if bar_hits_sl and bar_hits_tp:
-            dist_to_sl = abs(prev_close - stop_loss)
-            dist_to_tp = abs(prev_close - tp1)
-            outcome = "WIN" if dist_to_tp < dist_to_sl else "LOSS"
-            exit_p = tp1 if outcome == "WIN" else stop_loss
-            return {
-                "signal_id": signal_id,
-                "outcome": outcome,
-                "filled_at": filled_at_iso,
-                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-                "exit_price": exit_p,
-                "bars_checked": bars_checked,
-                "evaluation_note": f"SL et TP1 dans même bougie — intra-bar bias résolu par proximité. fill={fill_price}{fill_time_note}",
-                "fill_time_minutes": fill_time_min
-            }
+        # Cas prudent : SL et TP1 dans la même bougie AVANT tout outcome connu.
+        if first_outcome is None and bar_hits_sl and any(idx == 1 for idx, _, _ in hit_tp_indices):
+            rr["ambiguous_touch"] = True
+            rr["ambiguous_touch_note"] = "TP1 and SL touched in same candle; conservative ordering applied"
+            rr["sl_touched"] = True
+            rr["sl_touched_at"] = _iso(ts)
+            rr["time_to_sl_minutes"] = _minutes_from_fill(ts, filled_at_ts)
+            rr["first_touch"] = "SL"
+            rr["first_outcome"] = "LOSS"
+            rr["max_tp_reached"] = 0
+            rr["max_rr_reached"] = 0
+            outcome = "LOSS"
+            closed_at = _iso(ts)
+            exit_price = stop_loss
+            note_parts.append("SL et TP1 dans même bougie — classement conservateur LOSS")
+            break
 
-        if bar_hits_tp:
-            return {
-                "signal_id": signal_id,
-                "outcome": "WIN",
-                "filled_at": filled_at_iso,
-                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-                "exit_price": tp1,
-                "bars_checked": bars_checked,
-                "evaluation_note": f"TP1 touché. fill={fill_price}{fill_time_note}",
-                "fill_time_minutes": fill_time_min
-            }
+        # Enregistre tous les TP touchés dans cette bougie, sans s'arrêter à TP1.
+        for idx, tp, rr_val in hit_tp_indices:
+            touched_key = f"tp{idx}_touched"
+            at_key = f"tp{idx}_touched_at"
+            time_key = f"time_to_tp{idx}_minutes"
+            if not rr.get(touched_key):
+                rr[touched_key] = True
+                rr[at_key] = _iso(ts)
+                rr[time_key] = _minutes_from_fill(ts, filled_at_ts)
+                rr["max_tp_reached"] = max(int(rr.get("max_tp_reached") or 0), idx)
+                rr["max_rr_reached"] = max(float(rr.get("max_rr_reached") or 0), rr_val)
+                if first_outcome is None and idx == 1:
+                    first_outcome = "WIN"
+                    rr["first_touch"] = "TP1"
+                    rr["first_outcome"] = "WIN"
+                    outcome = "WIN"
+                    closed_at = _iso(ts)
+                    exit_price = tp
+                    note_parts.append("TP1 touché")
 
         if bar_hits_sl:
-            return {
-                "signal_id": signal_id,
-                "outcome": "LOSS",
-                "filled_at": filled_at_iso,
-                "closed_at": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-                "exit_price": stop_loss,
-                "bars_checked": bars_checked,
-                "evaluation_note": f"SL touché. fill={fill_price}{fill_time_note}",
-                "fill_time_minutes": fill_time_min
-            }
+            rr["sl_touched"] = True
+            rr["sl_touched_at"] = rr.get("sl_touched_at") or _iso(ts)
+            rr["time_to_sl_minutes"] = rr.get("time_to_sl_minutes") or _minutes_from_fill(ts, filled_at_ts)
+            if first_outcome is None:
+                first_outcome = "LOSS"
+                rr["first_touch"] = "SL"
+                rr["first_outcome"] = "LOSS"
+                outcome = "LOSS"
+                closed_at = _iso(ts)
+                exit_price = stop_loss
+                note_parts.append("SL touché avant TP1")
+            else:
+                note_parts.append("SL touché après TP1")
+            # On arrête au SL : après SL le trade réel est invalidé, mais les TP déjà touchés restent mesurés.
+            break
 
         prev_close = bar["close"]
 
+    # Compatibilité historique : si TP1 a été touché, le trade est WIN même si SL vient après.
+    if rr.get("tp1_touched"):
+        outcome = "WIN"
+        if not closed_at:
+            closed_at = rr.get("tp1_touched_at", "")
+            exit_price = tp_values.get(1) or tp1
+        if not rr.get("first_touch"):
+            rr["first_touch"] = "TP1"
+            rr["first_outcome"] = "WIN"
+    elif rr.get("sl_touched"):
+        outcome = "LOSS"
+        if not closed_at:
+            closed_at = rr.get("sl_touched_at", "")
+            exit_price = stop_loss
+        if not rr.get("first_touch"):
+            rr["first_touch"] = "SL"
+            rr["first_outcome"] = "LOSS"
+
+    if outcome in ("WIN", "LOSS"):
+        tp_summary = f"max_tp={rr.get('max_tp_reached', 0)} max_rr={rr.get('max_rr_reached', 0)}"
+        note = " ; ".join(note_parts) if note_parts else ("TP/SL évalué")
+        return _with_rr({
+            "signal_id": signal_id,
+            "outcome": outcome,
+            "filled_at": filled_at_iso,
+            "closed_at": closed_at,
+            "exit_price": exit_price,
+            "bars_checked": bars_checked,
+            "evaluation_note": f"{note}. {tp_summary}. fill={fill_price}{fill_time_note}",
+            "fill_time_minutes": fill_time_min,
+            "_now_ts": now_ts,
+            "_resolve_ts": resolve_ts
+        }, rr)
+
     if now_ts >= resolve_ts:
-        return {
+        return _with_rr({
             "signal_id": signal_id,
             "outcome": "EXPIRED",
             "filled_at": filled_at_iso,
             "closed_at": "",
             "exit_price": "",
             "bars_checked": bars_checked,
-            "evaluation_note": f"72h écoulées sans SL ni TP1. fill={fill_price}{fill_time_note}",
-            "fill_time_minutes": fill_time_min
-        }
+            "evaluation_note": f"72h écoulées sans SL ni TP1. max_tp={rr.get('max_tp_reached', 0)} max_rr={rr.get('max_rr_reached', 0)}. fill={fill_price}{fill_time_note}",
+            "fill_time_minutes": fill_time_min,
+            "_now_ts": now_ts,
+            "_resolve_ts": resolve_ts
+        }, rr)
 
-    return {
+    return _with_rr({
         "signal_id": signal_id,
         "outcome": "OPEN",
         "filled_at": filled_at_iso,
         "closed_at": "",
         "exit_price": "",
         "bars_checked": bars_checked,
-        "evaluation_note": f"rempli à {fill_price}, attente SL/TP{fill_time_note}",
-        "fill_time_minutes": fill_time_min
-    }
+        "evaluation_note": f"rempli à {fill_price}, attente SL/TP. max_tp={rr.get('max_tp_reached', 0)} max_rr={rr.get('max_rr_reached', 0)}{fill_time_note}",
+        "fill_time_minutes": fill_time_min,
+        "_now_ts": now_ts,
+        "_resolve_ts": resolve_ts
+    }, rr)
 
 
 @app.route("/evaluate_signals", methods=["POST"])
@@ -6202,7 +6412,7 @@ def evaluate_signals():
 
         if not signals:
             return jsonify({"error": "signals list vide ou manquante",
-                            "results": [], "evaluated": 0, "still_open": 0, "resolved": 0}), 200
+                            "results": [], "evaluated": 0, "still_open": 0, "resolved": 0, "still_monitoring_rr": 0}), 200
 
         if len(signals) > 200:
             return jsonify({"error": "trop de signaux (max 200 par appel)",
@@ -6224,23 +6434,30 @@ def evaluate_signals():
                         "bars_checked": 0,
                         "filled_at": sig.get("filled_at", ""),
                         "closed_at": "",
-                        "exit_price": ""
+                        "exit_price": "",
+                        "rr_fully_resolved": False,
+                        "rr_monitoring_status": "RR_EVALUATION_ERROR",
+                        "rr_monitoring_until": ""
                     })
 
         still_open = sum(1 for r in results if r.get("outcome") == "OPEN")
+        still_monitoring_rr = sum(1 for r in results if not bool(r.get("rr_fully_resolved", False)))
+        rr_fully_resolved_count = len(results) - still_monitoring_rr
         resolved = len(results) - still_open
         outcome_counts = {}
         for r in results:
             out = r.get("outcome", "?")
             outcome_counts[out] = outcome_counts.get(out, 0) + 1
 
-        logger.info("evaluate_signals: %d signaux, %d résolus, %d encore OPEN, outcomes=%s",
-                    len(signals), resolved, still_open, outcome_counts)
+        logger.info("evaluate_signals: %d signaux, %d résolus, %d encore OPEN, %d still_monitoring_rr, outcomes=%s",
+                    len(signals), resolved, still_open, still_monitoring_rr, outcome_counts)
 
         return jsonify({
             "results": results,
             "evaluated": len(results),
             "still_open": still_open,
+            "still_monitoring_rr": still_monitoring_rr,
+            "rr_fully_resolved_count": rr_fully_resolved_count,
             "resolved": resolved,
             "outcome_counts": outcome_counts
         })
@@ -6319,7 +6536,7 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.4.3",
+        "version": "6.5.5",
         "decision_version": DECISION_VERSION,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
@@ -6334,11 +6551,15 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.4.3",
+        "version": "6.5.5",
         "decision_version": DECISION_VERSION,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
     })
+
+@app.route("/status", methods=["GET"])
+def status():
+    return health()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
