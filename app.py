@@ -191,7 +191,7 @@ FUTURES_OVERHEATED_LEV_CAP   = int(os.environ.get("FUTURES_OVERHEATED_LEV_CAP", 
 FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE", "0.70"))
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
-DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.5.5")
+DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.6.0")
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -250,6 +250,52 @@ HIST_BLOCK_MIN_N = int(os.environ.get("HIST_BLOCK_MIN_N", "10"))
 HIST_BLOCK_MAX_WR = float(os.environ.get("HIST_BLOCK_MAX_WR", "0.45"))
 HIST_REJECT_MIN_N = int(os.environ.get("HIST_REJECT_MIN_N", "15"))
 HIST_REJECT_MAX_WR = float(os.environ.get("HIST_REJECT_MAX_WR", "0.35"))
+# NOTE v6.6.0 : les constantes HIST_* ci-dessus sont conservees car
+# historical_volume_band_v654()/build_historical_key_v654()/HISTORICAL_PERFORMANCE_CACHE
+# deviennent le fournisseur du level_1 (legacy) du nouveau Memory Brain — rien n'est
+# supprime, tout est reutilise. Seule apply_historical_performance_guard() est remplacee
+# par apply_memory_brain_v660() (voir plus bas).
+
+# ─── CONFIG V6.6.0 — MEMORY BRAIN RR-AWARE (remplace l'ancien historical guard) ──
+# CHANGELOG v6.6.0 (assume, documente) :
+#   - remplacement de find_historical_match_v654()/apply_historical_performance_guard()
+#     par memory_brain_match_v660()/apply_memory_brain_v660()
+#   - nouvelle hierarchie a 4 niveaux + fallback legacy (level_1) + fallback global (level_0)
+#   - Strategie A de backoff : a chaque niveau, on elargit d'abord version_scope
+#     (current -> v65x -> all) AVANT de descendre au niveau de cle inferieur
+#   - ajout du shrinkage bayesien sur le winrate (wr_adjusted) pour ne pas
+#     surestimer les petits echantillons
+#   - ancien seuil HIST_PROMOTE_MIN_N=30 SCINDE en deux seuils distincts et non-ambigus :
+#       MEMORY_SHADOW_MIN_N=30  (peut passer en SHADOW_TEST)
+#       MEMORY_PROMOTE_MIN_N=50 (peut passer en PROMOTE_CANDIDATE, plus strict qu'avant)
+#   - v6.6.0 reste volontairement prudent : PROMOTE_CANDIDATE est INFORMATIF SEULEMENT,
+#     aucune promotion Telegram automatique n'est activee dans cette version.
+#     (cf. cahier des charges Jour 2 : "v6.6 = observation + downgrade prudent + shadow")
+MEMORY_CACHE_FILE = os.environ.get("MEMORY_CACHE_FILE", "learning_cache_v6_6.json")
+MEMORY_SHADOW_MIN_N = int(os.environ.get("MEMORY_SHADOW_MIN_N", "30"))
+MEMORY_PROMOTE_MIN_N = int(os.environ.get("MEMORY_PROMOTE_MIN_N", "50"))
+MEMORY_PROMOTE_MIN_WR_ADJ = float(os.environ.get("MEMORY_PROMOTE_MIN_WR_ADJ", "0.68"))
+MEMORY_SHADOW_MIN_WR_ADJ = float(os.environ.get("MEMORY_SHADOW_MIN_WR_ADJ", "0.65"))
+MEMORY_MIN_TP3_PLUS_RATE = float(os.environ.get("MEMORY_MIN_TP3_PLUS_RATE", "0.30"))
+MEMORY_MIN_SYMBOLS = int(os.environ.get("MEMORY_MIN_SYMBOLS", "3"))
+MEMORY_MIN_CALENDAR_DAYS = int(os.environ.get("MEMORY_MIN_CALENDAR_DAYS", "14"))
+MEMORY_SL_BEFORE_TP1_REJECT = float(os.environ.get("MEMORY_SL_BEFORE_TP1_REJECT", "0.55"))
+MEMORY_DOWNGRADE_MIN_N = int(os.environ.get("MEMORY_DOWNGRADE_MIN_N", "20"))
+# ^ garde-fou audit v6.6.0 : sans ce seuil explicite, un level_0 (min_n=1) ou tout
+#   autre niveau a tres petit n pouvait declencher un DOWNGRADE sur une poignee
+#   d'observations. 20 = aligne sur le min_n deja valide pour les niveaux 3/4.
+MEMORY_WR_REJECT = float(os.environ.get("MEMORY_WR_REJECT", "0.45"))
+MEMORY_SHRINK_K = int(os.environ.get("MEMORY_SHRINK_K", "20"))
+MEMORY_WR_GLOBAL_DEFAULT = float(os.environ.get("MEMORY_WR_GLOBAL_DEFAULT", "0.536"))
+# Seuils min_n par niveau — valides sur prototype offline (voir audit Jour 2) :
+# niveaux fins (3,4) = information/raffinement ; niveaux structurants (1,2) = seuil prudent.
+MEMORY_LEVEL_MIN_N = {
+    "level_4": 20,
+    "level_3": 20,
+    "level_2": 30,
+    "level_1_legacy": 30,
+    "level_0": 1,
+}
 
 TELEGRAM_ALLOWED_BUCKETS = {
     "LONG_PREMIUM",
@@ -514,6 +560,20 @@ def log_signal(entry):
             "v654_historical_actions": entry.get("v654_historical_actions"),
             "v654_historical_match": entry.get("v654_historical_match"),
             "v654_historical_note": entry.get("v654_historical_note"),
+            # ── v6.6.0 — audit complet Memory Brain ──────────────────────────────
+            "memory_level_used": entry.get("memory_level_used"),
+            "memory_version_scope_used": entry.get("memory_version_scope_used"),
+            "memory_key_used": entry.get("memory_key_used"),
+            "memory_n": entry.get("memory_n"),
+            "memory_wr_raw": entry.get("memory_wr_raw"),
+            "memory_wr_adjusted": entry.get("memory_wr_adjusted"),
+            "memory_avg_max_rr": entry.get("memory_avg_max_rr"),
+            "memory_tp3_plus_rate": entry.get("memory_tp3_plus_rate"),
+            "memory_tp5_rate": entry.get("memory_tp5_rate"),
+            "memory_win_then_sl_rate": entry.get("memory_win_then_sl_rate"),
+            "memory_sl_before_tp1_rate": entry.get("memory_sl_before_tp1_rate"),
+            "memory_recommendation": entry.get("memory_recommendation"),
+            "memory_action_applied": entry.get("memory_action_applied"),
             # ── v6.5.0 — audit complet contexte / setup / participation / RR ──
             "btc_phase": entry.get("btc_phase"),
             "btc_context_bias": entry.get("btc_context_bias"),
@@ -717,6 +777,22 @@ def build_signal_record(r, market_regime, data_source_run, emitted_ts, market_de
         "v654_historical_actions": r.get("v654_historical_actions", ""),
         "v654_historical_match": r.get("v654_historical_match", {}),
         "v654_historical_note": r.get("v654_historical_note", ""),
+        # ── Champs debug Memory Brain v6.6.0 (audit obligatoire, cahier des charges) ──
+        "memory_level_used": r.get("memory_level_used", ""),
+        "memory_version_scope_used": r.get("memory_version_scope_used", ""),
+        "memory_key_used": r.get("memory_key_used", ""),
+        "memory_n": r.get("memory_n", 0),
+        "memory_wr_raw": r.get("memory_wr_raw", 0),
+        "memory_wr_adjusted": r.get("memory_wr_adjusted", 0),
+        "memory_avg_max_rr": r.get("memory_avg_max_rr", 0),
+        "memory_tp3_plus_rate": r.get("memory_tp3_plus_rate", 0),
+        "memory_tp5_rate": r.get("memory_tp5_rate", 0),
+        "memory_win_then_sl_rate": r.get("memory_win_then_sl_rate", 0),
+        "memory_sl_before_tp1_rate": r.get("memory_sl_before_tp1_rate", 0),
+        "memory_recommendation": r.get("memory_recommendation", ""),
+        "memory_action_applied": r.get("memory_action_applied", "none"),
+        "tried_path": r.get("tried_path", ""),
+        "nearest_fine_match": r.get("nearest_fine_match", {}),
         # ── Champs d'évaluation (forward backtest) ──────────────────────────
         "outcome":         "OPEN",
         "fill_deadline":   datetime.fromtimestamp(fill_deadline_ts, tz=timezone.utc).isoformat(),
@@ -2483,6 +2559,61 @@ def load_historical_performance_cache():
 HISTORICAL_PERFORMANCE_CACHE = load_historical_performance_cache()
 
 
+def load_memory_brain_cache():
+    """
+    Charge le cache Memory Brain v6.6.0 (learning_cache_v6_6.json).
+
+    Format attendu :
+    {
+      "_meta": {"wr_global": 0.536, "generated_at": "...", "version": "v6.6.0"},
+      "level_4": {"current_v6.5.5": {"KEY|STR": {n, wins, losses, wr_raw, avg_max_rr,
+                                                   tp3_plus_rate, tp5_rate, win_then_sl_rate,
+                                                   sl_before_tp1_rate, symbols_count, calendar_days}},
+                  "v65x": {...}, "all": {...}},
+      "level_3": {...}, "level_2": {...}, "level_0": {...}
+      # NB : level_1 n'est PAS dans ce fichier — il reste fourni par
+      # HISTORICAL_PERFORMANCE_CACHE (v49), reutilise tel quel comme fallback legacy.
+    }
+
+    Resilience : si le fichier n'existe pas encore (le job de generation
+    learning_cache_v6_6.json est un livrable separe, Jour 2 / Livrable 3),
+    le Memory Brain fonctionne quand meme : il retombe automatiquement sur
+    level_1 (legacy v49) puis level_0 (fallback global), sans jamais planter.
+    """
+    candidates = [
+        MEMORY_CACHE_FILE,
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), MEMORY_CACHE_FILE),
+        "/mnt/data/learning_cache_v6_6.json",
+    ]
+    for path in candidates:
+        try:
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    n_keys = sum(
+                        len(v) for lvl in ("level_4", "level_3", "level_2", "level_0")
+                        for v in data.get(lvl, {}).values()
+                        if isinstance(v, dict)
+                    )
+                    logger.info("memory brain cache loaded: %s (%d cles agregees)", path, n_keys)
+                    return data
+        except Exception as exc:
+            logger.warning("memory brain cache load failed %s: %s", path, exc)
+    logger.warning(
+        "memory brain cache (learning_cache_v6_6.json) indisponible — "
+        "Memory Brain fonctionnera en repli legacy (level_1 via cache v49 uniquement, "
+        "puis FALLBACK_EMPTY si aucun match) "
+        "jusqu'a generation du cache (Jour 2 / Livrable 3)."
+    )
+    return {}
+
+MEMORY_BRAIN_CACHE = load_memory_brain_cache()
+MEMORY_WR_GLOBAL = float(
+    (MEMORY_BRAIN_CACHE.get("_meta") or {}).get("wr_global", MEMORY_WR_GLOBAL_DEFAULT)
+)
+
+
 def historical_volume_band_v654(volume_relatif):
     """Bandes alignées avec historical_performance_cache_v49.json."""
     try:
@@ -2522,13 +2653,278 @@ def find_historical_match_v654(direction, entry_type, btc_phase, volume_relatif)
     return None
 
 
-def apply_historical_performance_guard(
+# ─── v6.6.0 — MEMORY BRAIN RR-AWARE ───────────────────────────────────────────
+# Remplace find_historical_match_v654() comme cerveau memoire principal.
+# find_historical_match_v654()/HISTORICAL_PERFORMANCE_CACHE restent utilises
+# tels quels comme fournisseur du level_1 (fallback legacy) ci-dessous —
+# rien n'est jete, tout l'historique v49 reste exploitable.
+#
+# Prototype valide offline (Jour 2, audit Claude+GPT) sur WATCHLIST_LOG reel :
+#   - Option 2 validee : level_2 = direction|setup_family|btc_phase (SANS volume_regime,
+#     qui fragmentait un pattern reel n=38 -> n=17 et le faisait sauter au niveau grossier)
+#   - Strategie A validee : a chaque niveau, elargir version_scope avant de descendre
+#   - shrinkage bayesien reproduit exactement le calcul manuel (n=38, wr=81.6% -> wr_adj=71.9%)
+
+def participation_bucket_v660(participation_score):
+    try:
+        s = float(participation_score)
+    except Exception:
+        return "unknown"
+    if s <= -2: return "negative_participation"
+    if s <= 0:  return "weak_participation"
+    if s <= 2:  return "normal_participation"
+    return "strong_participation"
+
+
+def version_exact_v660(decision_version):
+    """Version exacte du signal courant — le scope 'current' le plus strict."""
+    v = str(decision_version or "").strip().lower()
+    return v if v and v != "none" else "unknown"
+
+
+def is_v65_family_v660(decision_version):
+    """Toutes les sous-versions v6.5.x — scope intermediaire 'v65x'."""
+    v = str(decision_version or "").strip().lower()
+    return v.startswith("v6.5")
+
+
+def build_memory_keys_v660(direction, entry_type, setup_family, btc_phase, volume_relatif,
+                            bucket, crowding_state, participation_score, source):
+    """
+    Construit les 5 cles (level_4 -> level_0), alignees sur le prototype valide.
+    level_2 est le "noyau technique stable" : direction|setup_family|btc_phase,
+    SANS volume_regime (cf. decouverte prototype : le fragmenter trop tot masque
+    les meilleurs patterns).
+    """
+    direction_u = str(direction or "").upper()
+    vol_band = historical_volume_band_v654(volume_relatif)
+    part_bucket = participation_bucket_v660(participation_score)
+
+    return {
+        "level_4": (direction_u, setup_family, btc_phase, bucket, vol_band, crowding_state, part_bucket),
+        "level_3": (direction_u, setup_family, btc_phase, bucket),
+        "level_2": (direction_u, setup_family, btc_phase),
+        "level_1_legacy": (direction_u, str(entry_type or "").upper(), btc_phase, vol_band, str(source or "all")),
+        "level_0": (direction_u,),
+    }
+
+
+def _memory_key_to_string(key_tuple):
+    return "|".join(str(p) for p in key_tuple)
+
+
+def _memory_cache_lookup(level_name, version_scope_key, key_tuple):
+    """Lit une entree agregee dans MEMORY_BRAIN_CACHE.
+
+    NB : level_1_legacy n'appelle JAMAIS cette fonction — il est traite a part
+    dans memory_brain_match_v660() via un appel direct a find_historical_match_v654()
+    (qui gere deja son propre repli v653->v65x->all avec le volume_relatif BRUT).
+    """
+    level_cache = MEMORY_BRAIN_CACHE.get(level_name, {})
+    scope_cache = level_cache.get(version_scope_key, {})
+    row = scope_cache.get(_memory_key_to_string(key_tuple))
+    return row if isinstance(row, dict) else None
+
+
+def compute_wr_adjusted_v660(wins, n, wr_global=None):
+    """Shrinkage bayesien : wr_adjusted = (wins + k*wr_global) / (n + k)."""
+    wg = MEMORY_WR_GLOBAL if wr_global is None else wr_global
+    if n <= 0:
+        return wg
+    return (wins + MEMORY_SHRINK_K * wg) / (n + MEMORY_SHRINK_K)
+
+
+def classify_memory_v660(row):
+    """Classification identique au prototype valide."""
+    n = int(row.get("n") or 0)
+    wr_raw = float(row.get("wr_raw") or 0)
+    wr_adj = float(row.get("wr_adjusted") or 0)
+    tp3_plus_rate = float(row.get("tp3_plus_rate") or 0)
+    sl_before_tp1_rate = float(row.get("sl_before_tp1_rate") or 0)
+    win_then_sl_rate = float(row.get("win_then_sl_rate") or 0)
+    symbols_count = int(row.get("symbols_count") or 0)
+    calendar_days = int(row.get("calendar_days") or 0)
+
+    if n >= MEMORY_SHADOW_MIN_N and wr_raw <= MEMORY_WR_REJECT:
+        return "REJECT"
+    if n >= MEMORY_DOWNGRADE_MIN_N and sl_before_tp1_rate >= MEMORY_SL_BEFORE_TP1_REJECT:
+        return "DOWNGRADE"
+    if (n >= MEMORY_PROMOTE_MIN_N and wr_adj >= MEMORY_PROMOTE_MIN_WR_ADJ
+            and tp3_plus_rate >= MEMORY_MIN_TP3_PLUS_RATE
+            and symbols_count >= MEMORY_MIN_SYMBOLS
+            and calendar_days >= MEMORY_MIN_CALENDAR_DAYS):
+        return "PROMOTE_CANDIDATE"   # informatif uniquement en v6.6.0, cf. changelog
+    if n >= MEMORY_SHADOW_MIN_N and wr_adj >= MEMORY_SHADOW_MIN_WR_ADJ:
+        return "SHADOW_TEST"
+    if wr_adj >= 0.50 and win_then_sl_rate >= 0.55:
+        return "TP1_ONLY"
+    if n < MEMORY_SHADOW_MIN_N:
+        return "INSUFFICIENT_DATA"
+    return "WATCHLIST_ONLY"
+
+
+MEMORY_LEVEL_ORDER = ["level_4", "level_3", "level_2", "level_1_legacy", "level_0"]
+
+
+def memory_brain_match_v660(direction, entry_type, setup_family, btc_phase, volume_relatif,
+                             bucket, crowding_state, participation_score, source, decision_version):
+    """
+    Coeur du Memory Brain v6.6.0. Strategie A validee : a chaque niveau (4->0),
+    on elargit version_scope (current -> v65x -> all) AVANT de descendre au
+    niveau de cle inferieur. level_0 est inclus dans la boucle normale
+    (min_n=1) : plus de double-passage / log trompeur (fix applique avant
+    transcription, cf. audit prototype).
+    """
+    keys = build_memory_keys_v660(
+        direction, entry_type, setup_family, btc_phase, volume_relatif,
+        bucket, crowding_state, participation_score, source,
+    )
+    vexact = version_exact_v660(decision_version)
+    tried_path = []
+    nearest_fine_match = None
+
+    for level_name in MEMORY_LEVEL_ORDER:
+        key = keys[level_name]
+        if any(part is None or part == "" for part in key):
+            tried_path.append(f"{level_name}/* -> cle incomplete, skip")
+            continue
+
+        min_n = MEMORY_LEVEL_MIN_N[level_name]
+
+        # ── level_1_legacy : cas special ──────────────────────────────────
+        # find_historical_match_v654() gere DEJA son propre repli interne
+        # (v653 -> v65x -> all) avec le volume_relatif BRUT (pas encore
+        # bande). On l'appelle une seule fois ici, sans le forcer dans la
+        # boucle current/v65x/all des autres niveaux (qui ne correspond pas
+        # a son schema de version interne, et qui provoquait un double
+        # bandage volume_band -> historical_volume_band_v654(vol_band) ->
+        # "unknown" systematique — bug identifie en audit, corrige ici).
+        if level_name == "level_1_legacy":
+            hist = find_historical_match_v654(direction, entry_type, btc_phase, volume_relatif)
+            n = int(hist.get("n") or 0) if hist else 0
+
+            if n >= min_n:
+                wr_raw = float(hist.get("wr", 0) or 0)
+                wins = int(round(wr_raw * n))
+                wr_adjusted = compute_wr_adjusted_v660(wins, n)
+                stats = {
+                    "n": n, "wins": wins, "wr_raw": wr_raw, "wr_adjusted": wr_adjusted,
+                    "avg_max_rr": float(hist.get("avg_max_rr", 0) or 0),
+                    "tp3_plus_rate": float(hist.get("tp3_plus_rate", 0) or 0),
+                    "tp5_rate": float(hist.get("tp5_rate", 0) or 0),
+                    "win_then_sl_rate": float(hist.get("win_then_sl_rate", 0) or 0),
+                    "sl_before_tp1_rate": float(hist.get("sl_before_tp1_rate", 0) or 0),
+                    "symbols_count": int(hist.get("symbols_count", 0) or 0),
+                    "calendar_days": int(hist.get("calendar_days", 0) or 0),
+                }
+                reco = classify_memory_v660(stats)
+                tried_path.append(f"level_1_legacy/v49-backoff({hist.get('key')}) -> n={n} RETENU (seuil={min_n})")
+                return {
+                    "memory_level_used": "level_1_legacy",
+                    "memory_version_scope_used": "v49-backoff",
+                    "memory_key_used": hist.get("key"),
+                    "memory_n": stats["n"],
+                    "memory_wr_raw": stats["wr_raw"],
+                    "memory_wr_adjusted": stats["wr_adjusted"],
+                    "memory_avg_max_rr": stats["avg_max_rr"],
+                    "memory_tp3_plus_rate": stats["tp3_plus_rate"],
+                    "memory_tp5_rate": stats["tp5_rate"],
+                    "memory_win_then_sl_rate": stats["win_then_sl_rate"],
+                    "memory_sl_before_tp1_rate": stats["sl_before_tp1_rate"],
+                    "memory_recommendation": reco,
+                    "tried_path": tried_path,
+                    "nearest_fine_match": nearest_fine_match,
+                }
+            else:
+                tried_path.append(f"level_1_legacy/v49-backoff -> n={n} insuffisant (seuil={min_n})")
+                if n > 0 and nearest_fine_match is None:
+                    nearest_fine_match = {
+                        "level": "level_1_legacy", "version_scope": "v49-backoff",
+                        "key": hist.get("key") if hist else None, "n": n,
+                    }
+            continue  # passe a level_0, pas de boucle vscope pour ce niveau
+
+        for vscope_label, vscope_key in [
+            (f"current({vexact})", "current_" + vexact),
+            ("v65x", "v65x"),
+            ("all", "all"),
+        ]:
+            row = _memory_cache_lookup(level_name, vscope_key, key)
+            n = int(row.get("n") or 0) if row else 0
+
+            if n >= min_n:
+                wins = int(row.get("wins") or 0)
+                wr_raw = float(row.get("wr_raw", row.get("wr", 0)) or 0)
+                wr_adjusted = compute_wr_adjusted_v660(wins if wins else round(wr_raw * n), n)
+                stats = {
+                    "n": n,
+                    "wins": wins,
+                    "wr_raw": wr_raw,
+                    "wr_adjusted": wr_adjusted,
+                    "avg_max_rr": float(row.get("avg_max_rr", 0) or 0),
+                    "tp3_plus_rate": float(row.get("tp3_plus_rate", 0) or 0),
+                    "tp5_rate": float(row.get("tp5_rate", 0) or 0),
+                    "win_then_sl_rate": float(row.get("win_then_sl_rate", 0) or 0),
+                    "sl_before_tp1_rate": float(row.get("sl_before_tp1_rate", 0) or 0),
+                    "symbols_count": int(row.get("symbols_count", 0) or 0),
+                    "calendar_days": int(row.get("calendar_days", 0) or 0),
+                }
+                reco = classify_memory_v660(stats)
+                tried_path.append(f"{level_name}/{vscope_label} -> n={n} RETENU (seuil={min_n})")
+                return {
+                    "memory_level_used": level_name,
+                    "memory_version_scope_used": vscope_label,
+                    "memory_key_used": _memory_key_to_string(key),
+                    "memory_n": stats["n"],
+                    "memory_wr_raw": stats["wr_raw"],
+                    "memory_wr_adjusted": stats["wr_adjusted"],
+                    "memory_avg_max_rr": stats["avg_max_rr"],
+                    "memory_tp3_plus_rate": stats["tp3_plus_rate"],
+                    "memory_tp5_rate": stats["tp5_rate"],
+                    "memory_win_then_sl_rate": stats["win_then_sl_rate"],
+                    "memory_sl_before_tp1_rate": stats["sl_before_tp1_rate"],
+                    "memory_recommendation": reco,
+                    "tried_path": tried_path,
+                    "nearest_fine_match": nearest_fine_match,
+                }
+            else:
+                tried_path.append(f"{level_name}/{vscope_label} -> n={n} insuffisant (seuil={min_n})")
+                if n > 0 and nearest_fine_match is None:
+                    nearest_fine_match = {
+                        "level": level_name, "version_scope": vscope_label,
+                        "key": _memory_key_to_string(key), "n": n,
+                    }
+
+    # FALLBACK_EMPTY : n=0 absolument partout (extremement rare — meme
+    # level_0/all pour la seule direction devrait toujours avoir des donnees
+    # des que le cache a ete genere au moins une fois).
+    tried_path.append("FALLBACK_EMPTY -> aucune ligne trouvee a aucun niveau")
+    return {
+        "memory_level_used": "FALLBACK_EMPTY",
+        "memory_version_scope_used": "none",
+        "memory_key_used": None,
+        "memory_n": 0,
+        "memory_wr_raw": MEMORY_WR_GLOBAL,
+        "memory_wr_adjusted": MEMORY_WR_GLOBAL,
+        "memory_avg_max_rr": 0,
+        "memory_tp3_plus_rate": 0,
+        "memory_tp5_rate": 0,
+        "memory_win_then_sl_rate": 0,
+        "memory_sl_before_tp1_rate": 0,
+        "memory_recommendation": "INSUFFICIENT_DATA",
+        "tried_path": tried_path,
+        "nearest_fine_match": nearest_fine_match,
+    }
+
+
+def apply_memory_brain_v660(
     *,
     flag,
     confidence,
     max_leverage,
     direction,
     entry_type,
+    setup_family,
     global_score,
     signal_quality_bucket,
     regime_rule_applied,
@@ -2543,6 +2939,7 @@ def apply_historical_performance_guard(
     data_source,
     rr_valid,
     crowding_state,
+    decision_version=None,
     futures_zone=None,
     v6_score_futures=None,
     derivatives_alignment=None,
@@ -2550,11 +2947,16 @@ def apply_historical_performance_guard(
     volume_quality=None,
 ):
     """
-    v6.5.5 — Historical Performance Guard.
+    v6.6.0 — Memory Brain RR-Aware (remplace apply_historical_performance_guard).
 
-    - Bloque/downgrade les CANDIDAT si la signature historique est mauvaise.
-    - Promeut uniquement les WATCHLIST beta explicitement autorisées.
-    - Clé simple v49 : direction × entry_type × btc_phase × volume_band.
+    Portee du remplacement (patch controle, cf. audit Jour 2) :
+    - SEULE la section "correspondance historique" (find_historical_match_v654 +
+      reject/downgrade bases sur n/wr) est remplacee par le Memory Brain hierarchique.
+    - Tout le reste de cette fonction (blocage LONG post-impulsion BTC, garde
+      BTC_NEUTRAL_AFTER_BULL, garde LONG_PREMIUM, promotions beta
+      SHORT_MOMENTUM_BEAR_EXHAUSTION_BETA/LONG_EARLY_NEUTRAL_BETA/etc.) est
+      INCHANGE — ce ne sont pas des regles "historiques", ce sont des regles
+      contextuelles independantes, non couvertes par le prototype valide.
     """
     btc_phase = str(market_details.get("btc_phase") or market_details.get("btc_market_state") or "BTC_UNCLEAR")
     btc_var_30m = _safe_float(market_details.get("btc_variation_30m"), 0.0)
@@ -2574,10 +2976,25 @@ def apply_historical_performance_guard(
     except Exception:
         part_score = 0
     actions = []
-    hist = find_historical_match_v654(direction, entry_type, btc_phase, vol)
-    hist_note = ""
-    if hist:
-        hist_note = f"hist={hist.get('key')} n={hist.get('n')} wr={float(hist.get('wr', 0)):.1%}"
+
+    mem = memory_brain_match_v660(
+        direction=direction,
+        entry_type=entry_type,
+        setup_family=setup_family,
+        btc_phase=btc_phase,
+        volume_relatif=vol,
+        bucket=signal_quality_bucket,
+        crowding_state=crowding_state,
+        participation_score=participation_score,
+        source=data_source,
+        decision_version=decision_version,
+    )
+    hist_note = (
+        f"memory={mem['memory_level_used']}/{mem['memory_version_scope_used']} "
+        f"key={mem['memory_key_used']} n={mem['memory_n']} "
+        f"wr_raw={mem['memory_wr_raw']:.1%} wr_adj={mem['memory_wr_adjusted']:.1%} "
+        f"reco={mem['memory_recommendation']}"
+    )
 
     # v6.5.5 — Blocage Telegram LONG sur phases BTC post-impulsion / rejet.
     # Important : on downgrade en WATCHLIST, pas en REJET, pour conserver la
@@ -2757,31 +3174,37 @@ def apply_historical_performance_guard(
             )
             actions.append("downgrade_beta_no_derivatives_v6543")
 
-    # Historical bad-match guard : blocage automatique, mais jamais après promotion beta explicite.
+    # Memory Brain guard v6.6.0 : blocage automatique, mais jamais après promotion beta explicite.
+    # IMPORTANT (contrainte v6.6.0) : seuls REJECT/DOWNGRADE modifient le flag.
+    # SHADOW_TEST / PROMOTE_CANDIDATE / TP1_ONLY / WATCHLIST_ONLY restent
+    # PUREMENT INFORMATIFS — aucune promotion Telegram automatique dans cette version.
     beta_bucket = signal_quality_bucket in beta_bucket_names
-    if hist and flag == "CANDIDAT" and not beta_bucket:
-        n = int(hist.get("n") or 0)
-        wr = float(hist.get("wr") or 0.0)
-        if n >= HIST_REJECT_MIN_N and wr <= HIST_REJECT_MAX_WR:
+    memory_reco = mem["memory_recommendation"]
+    if flag == "CANDIDAT" and not beta_bucket:
+        if memory_reco == "REJECT":
             flag = "REJET"
             confidence = min(confidence, 55)
             max_leverage = min(max_leverage, 3)
-            signal_quality_bucket = "REJECT_HISTORICAL_BAD_MATCH"
-            regime_rule_applied = "V654_HISTORICAL_REJECT"
-            risk_guard_reason = "historical bad match"
-            telegram_rule_notes = f"Historical reject: {hist_note}"
-            decision_explain = f"REJET v6.5.5 : signature historique trop faible ({hist_note})."
-            actions.append("historical_reject")
-        elif n >= HIST_BLOCK_MIN_N and wr <= HIST_BLOCK_MAX_WR:
+            signal_quality_bucket = "REJECT_MEMORY_BRAIN_BAD_MATCH"
+            regime_rule_applied = "V660_MEMORY_BRAIN_REJECT"
+            risk_guard_reason = "memory brain bad match"
+            telegram_rule_notes = f"Memory Brain reject: {hist_note}"
+            decision_explain = f"REJET v6.6.0 : signature memoire trop faible ({hist_note})."
+            actions.append("memory_brain_reject")
+        elif memory_reco == "DOWNGRADE":
             flag = "WATCHLIST"
             confidence = min(confidence, 60)
             max_leverage = min(max_leverage, 3)
-            signal_quality_bucket = "WATCHLIST_HISTORICAL_BAD_MATCH"
-            regime_rule_applied = "V654_HISTORICAL_DOWNGRADE"
-            risk_guard_reason = "historical weak match"
-            telegram_rule_notes = f"Historical downgrade: {hist_note}"
-            decision_explain = f"WATCHLIST v6.5.5 : signature historique faible ({hist_note})."
-            actions.append("historical_downgrade")
+            signal_quality_bucket = "WATCHLIST_MEMORY_BRAIN_BAD_MATCH"
+            regime_rule_applied = "V660_MEMORY_BRAIN_DOWNGRADE"
+            risk_guard_reason = "memory brain weak match"
+            telegram_rule_notes = f"Memory Brain downgrade: {hist_note}"
+            decision_explain = f"WATCHLIST v6.6.0 : signature memoire faible ({hist_note})."
+            actions.append("memory_brain_downgrade")
+        elif memory_reco in ("SHADOW_TEST", "PROMOTE_CANDIDATE", "TP1_ONLY"):
+            # v6.6.0 : purement informatif, aucun changement de flag/decision.
+            # PROMOTE_CANDIDATE != promotion Telegram automatique (cf. changelog).
+            actions.append(f"memory_brain_{memory_reco.lower()}_noted")
 
     return {
         "flag": flag,
@@ -2793,9 +3216,32 @@ def apply_historical_performance_guard(
         "decision_explain": decision_explain,
         "risk_guard_reason": risk_guard_reason,
         "executable_signal": flag == "CANDIDAT",
-        "historical_match": hist or {},
+        # Compat legacy (consommes par build_signal_record / log_signal existants) :
+        "historical_match": {
+            "level": mem["memory_level_used"],
+            "version_scope": mem["memory_version_scope_used"],
+            "key": mem["memory_key_used"],
+            "n": mem["memory_n"],
+            "wr": mem["memory_wr_raw"],
+        },
         "historical_actions": actions,
         "historical_note": hist_note,
+        # Debug Memory Brain v6.6.0 complet (obligatoire, cf. cahier des charges) :
+        "memory_level_used": mem["memory_level_used"],
+        "memory_version_scope_used": mem["memory_version_scope_used"],
+        "memory_key_used": mem["memory_key_used"],
+        "memory_n": mem["memory_n"],
+        "memory_wr_raw": mem["memory_wr_raw"],
+        "memory_wr_adjusted": mem["memory_wr_adjusted"],
+        "memory_avg_max_rr": mem["memory_avg_max_rr"],
+        "memory_tp3_plus_rate": mem["memory_tp3_plus_rate"],
+        "memory_tp5_rate": mem["memory_tp5_rate"],
+        "memory_win_then_sl_rate": mem["memory_win_then_sl_rate"],
+        "memory_sl_before_tp1_rate": mem["memory_sl_before_tp1_rate"],
+        "memory_recommendation": memory_reco,
+        "memory_action_applied": actions[-1] if actions else "none",
+        "tried_path": mem["tried_path"],
+        "nearest_fine_match": mem["nearest_fine_match"],
     }
 
 
@@ -3030,7 +3476,7 @@ def apply_contextual_v652_rules(
         notes.append("LONG_PREMIUM BTC_BULL_SOFT guard: " + " | ".join(bullsoft_longpremium_blockers))
 
     return {
-        "version": "v6.5.5",
+        "version": "v6.6.0",
         "actions": actions,
         "forced_bucket": forced_bucket,
         "force_flag": force_flag,
@@ -4681,13 +5127,14 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
     risk_guard_reason = bucket_decision["risk_guard_reason"]
     executable_signal = bucket_decision["executable_signal"]
 
-    # ── V6.5.4 — Historical Performance Guard, dernier filtre avant Telegram ─
-    hist_decision = apply_historical_performance_guard(
+    # ── V6.6.0 — Memory Brain RR-Aware, dernier filtre avant Telegram ────────
+    mem_decision = apply_memory_brain_v660(
         flag=flag,
         confidence=confidence,
         max_leverage=max_leverage,
         direction=direction,
         entry_type=entry_type,
+        setup_family=setup_v65.get("setup_family"),
         global_score=global_score,
         signal_quality_bucket=signal_quality_bucket,
         regime_rule_applied=regime_rule_applied,
@@ -4702,21 +5149,22 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         data_source=data_source,
         rr_valid=rr_valid,
         crowding_state=participation_v65.get("crowding_state"),
+        decision_version=v61_decision.get("decision_version", DECISION_VERSION),
         futures_zone=futures_zone,
         v6_score_futures=v6.get("v6_score_futures"),
         derivatives_alignment=participation_v65.get("derivatives_alignment"),
         participation_score=participation_v65.get("participation_score"),
         volume_quality=participation_v65.get("volume_quality"),
     )
-    flag = hist_decision["flag"]
-    confidence = hist_decision["confidence"]
-    max_leverage = hist_decision["max_leverage"]
-    signal_quality_bucket = hist_decision["signal_quality_bucket"]
-    telegram_rule_notes = hist_decision["telegram_rule_notes"]
-    regime_rule_applied = hist_decision["regime_rule_applied"]
-    decision_explain = hist_decision["decision_explain"]
-    risk_guard_reason = hist_decision["risk_guard_reason"]
-    executable_signal = hist_decision["executable_signal"]
+    flag = mem_decision["flag"]
+    confidence = mem_decision["confidence"]
+    max_leverage = mem_decision["max_leverage"]
+    signal_quality_bucket = mem_decision["signal_quality_bucket"]
+    telegram_rule_notes = mem_decision["telegram_rule_notes"]
+    regime_rule_applied = mem_decision["regime_rule_applied"]
+    decision_explain = mem_decision["decision_explain"]
+    risk_guard_reason = mem_decision["risk_guard_reason"]
+    executable_signal = mem_decision["executable_signal"]
 
     # Duree estimee calculee par Python
     if trend_strength == "strong":
@@ -4853,9 +5301,25 @@ def score_symbol(symbol, ticker_data=None, market_regime="unknown", market_detai
         "v652_actions": " | ".join(v652_context.get("actions", [])) if isinstance(v652_context, dict) else "",
         "v652_notes": v652_context.get("notes", "") if isinstance(v652_context, dict) else "",
         "v652_short_beta_ok": v652_context.get("short_momentum_beta_ok", False) if isinstance(v652_context, dict) else False,
-        "v654_historical_actions": " | ".join(hist_decision.get("historical_actions", [])) if isinstance(hist_decision, dict) else "",
-        "v654_historical_match": hist_decision.get("historical_match", {}) if isinstance(hist_decision, dict) else {},
-        "v654_historical_note": hist_decision.get("historical_note", "") if isinstance(hist_decision, dict) else "",
+        "v654_historical_actions": " | ".join(mem_decision.get("historical_actions", [])) if isinstance(mem_decision, dict) else "",
+        "v654_historical_match": mem_decision.get("historical_match", {}) if isinstance(mem_decision, dict) else {},
+        "v654_historical_note": mem_decision.get("historical_note", "") if isinstance(mem_decision, dict) else "",
+        # ── Champs debug Memory Brain v6.6.0 (obligatoires, cahier des charges) ──
+        "memory_level_used": mem_decision.get("memory_level_used", ""),
+        "memory_version_scope_used": mem_decision.get("memory_version_scope_used", ""),
+        "memory_key_used": mem_decision.get("memory_key_used", ""),
+        "memory_n": mem_decision.get("memory_n", 0),
+        "memory_wr_raw": mem_decision.get("memory_wr_raw", 0),
+        "memory_wr_adjusted": mem_decision.get("memory_wr_adjusted", 0),
+        "memory_avg_max_rr": mem_decision.get("memory_avg_max_rr", 0),
+        "memory_tp3_plus_rate": mem_decision.get("memory_tp3_plus_rate", 0),
+        "memory_tp5_rate": mem_decision.get("memory_tp5_rate", 0),
+        "memory_win_then_sl_rate": mem_decision.get("memory_win_then_sl_rate", 0),
+        "memory_sl_before_tp1_rate": mem_decision.get("memory_sl_before_tp1_rate", 0),
+        "memory_recommendation": mem_decision.get("memory_recommendation", ""),
+        "memory_action_applied": mem_decision.get("memory_action_applied", "none"),
+        "tried_path": " | ".join(mem_decision.get("tried_path", [])) if isinstance(mem_decision.get("tried_path"), list) else "",
+        "nearest_fine_match": mem_decision.get("nearest_fine_match") or {},
         "confidence_cap_reason": confidence_cap_reason,
         "leverage_cap_reason": leverage_cap_reason,
     }
@@ -5014,10 +5478,20 @@ def decision_engine_v6_1(symbol, flag, direction, entry_type, global_score, conf
 
 
 def validate_decision_config():
-    """Sanity check non bloquant de la configuration décisionnelle v6.5.5."""
+    """Sanity check non bloquant de la configuration décisionnelle v6.6.0."""
     warnings = []
-    if DECISION_VERSION != "v6.5.5":
+    if DECISION_VERSION != "v6.6.0":
         warnings.append(f"DECISION_VERSION inattendu: {DECISION_VERSION}")
+    if not (MEMORY_SHADOW_MIN_N <= MEMORY_PROMOTE_MIN_N):
+        warnings.append("Seuils Memory Brain incohérents: MEMORY_SHADOW_MIN_N <= MEMORY_PROMOTE_MIN_N attendu")
+    if not (MEMORY_SHADOW_MIN_WR_ADJ <= MEMORY_PROMOTE_MIN_WR_ADJ):
+        warnings.append("Seuils Memory Brain incohérents: MEMORY_SHADOW_MIN_WR_ADJ <= MEMORY_PROMOTE_MIN_WR_ADJ attendu")
+    if not MEMORY_BRAIN_CACHE:
+        warnings.append(
+            "learning_cache_v6_6.json absent — Memory Brain repli sur level_1 (legacy v49) "
+            "si match disponible, sinon FALLBACK_EMPTY ; level_0 sera disponible après "
+            "génération du cache (Jour 2 / Livrable 3)"
+        )
     if not (LONG_PREMIUM_PR_DEFAULT <= LONG_PREMIUM_PR_BULL_SOFT <= LONG_PREMIUM_PR_BULL_IMPULSE):
         warnings.append("Seuils PR incohérents: DEFAULT <= BULL_SOFT <= BULL_IMPULSE attendu")
     if not (BTC_BEAR_CONT_VAR4H_MAX < 0 and BTC_BEAR_CONT_VAR2H_MAX < 0):
@@ -6536,10 +7010,12 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.5",
+        "version": "6.6.0",
         "decision_version": DECISION_VERSION,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
+        "memory_brain_cache_loaded": bool(MEMORY_BRAIN_CACHE),
+        "memory_brain_wr_global": MEMORY_WR_GLOBAL,
         "providers": results
     })
 
@@ -6551,10 +7027,12 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.5.5",
+        "version": "6.6.0",
         "decision_version": DECISION_VERSION,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
+        "memory_brain_cache_loaded": bool(MEMORY_BRAIN_CACHE),
+        "memory_brain_wr_global": MEMORY_WR_GLOBAL,
     })
 
 @app.route("/status", methods=["GET"])
