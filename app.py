@@ -8,6 +8,7 @@ import time
 import os
 import logging
 import threading
+import hashlib
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -192,6 +193,22 @@ FUTURES_LATE_POSITION_RANGE  = float(os.environ.get("FUTURES_LATE_POSITION_RANGE
 
 # ─── CONFIG V6.1 — DECISION ENGINE CENTRALISÉ ───────────────────────────────
 DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.6.0")
+
+# ─── APP / INSTRUMENTATION VERSIONS — Sprint 1b-A (observability only) ───────
+# DECISION_VERSION remains unchanged by design: no scoring, selection, bucket,
+# Telegram or Memory Brain rule is modified by this instrumentation release.
+APP_VERSION = os.environ.get("APP_VERSION", "6.6.0.1")
+INSTRUMENTATION_VERSION = os.environ.get("INSTRUMENTATION_VERSION", "1.0.0")
+FUNNEL_AUDIT_ENABLED = os.environ.get("FUNNEL_AUDIT_ENABLED", "false").lower() == "true"
+FUNNEL_AUDIT_URL = os.environ.get("FUNNEL_AUDIT_URL", "").strip()
+FUNNEL_AUDIT_SECRET = os.environ.get("FUNNEL_AUDIT_SECRET", "")
+FUNNEL_AUDIT_TIMEOUT_SECONDS = float(os.environ.get("FUNNEL_AUDIT_TIMEOUT_SECONDS", "1.5"))
+
+# Dedicated single-worker executor: /full_analysis only queues the best-effort
+# delivery and never waits for the Apps Script network call.
+_FUNNEL_AUDIT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funnel-audit")
+_FUNNEL_AUDIT_STATS_LOCK = threading.Lock()
+_FUNNEL_AUDIT_STATS = None  # lazy: remains uninitialized while the feature flag is off
 V61_LATE_ENTRY_RISK_MIN = float(os.environ.get("V61_LATE_ENTRY_RISK_MIN", "55"))
 V61_PROMOTE_MAX_LATE_RISK = float(os.environ.get("V61_PROMOTE_MAX_LATE_RISK", "45"))
 V61_PROMOTE_MIN_VOLUME = float(os.environ.get("V61_PROMOTE_MIN_VOLUME", "0.50"))
@@ -5671,10 +5688,219 @@ def cooldown_status():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ─── SELECTION FUNNEL INSTRUMENTATION 1b-A (OBSERVABILITY ONLY) ──────────────
+
+def _new_funnel_run_id(run_ts):
+    """Stable-enough process-local identifier; contains no market or secret data."""
+    material = f"{run_ts:.6f}|{os.getpid()}|{threading.get_ident()}"
+    return "fa-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+
+def _audit_stats_snapshot():
+    """Returns counters without initializing them when instrumentation is disabled."""
+    with _FUNNEL_AUDIT_STATS_LOCK:
+        if _FUNNEL_AUDIT_STATS is None:
+            return {
+                "audit_posts_attempted": 0,
+                "audit_posts_succeeded": 0,
+                "audit_posts_failed": 0,
+                "last_audit_post_status": "not_started",
+            }
+        return dict(_FUNNEL_AUDIT_STATS)
+
+
+def _audit_stats_update(*, attempted=0, succeeded=0, failed=0, status=None):
+    global _FUNNEL_AUDIT_STATS
+    with _FUNNEL_AUDIT_STATS_LOCK:
+        if _FUNNEL_AUDIT_STATS is None:
+            _FUNNEL_AUDIT_STATS = {
+                "audit_posts_attempted": 0,
+                "audit_posts_succeeded": 0,
+                "audit_posts_failed": 0,
+                "last_audit_post_status": "not_started",
+            }
+        _FUNNEL_AUDIT_STATS["audit_posts_attempted"] += int(attempted)
+        _FUNNEL_AUDIT_STATS["audit_posts_succeeded"] += int(succeeded)
+        _FUNNEL_AUDIT_STATS["audit_posts_failed"] += int(failed)
+        if status is not None:
+            _FUNNEL_AUDIT_STATS["last_audit_post_status"] = str(status)[:240]
+
+
+def _count_by(rows, field, *, include_empty=False):
+    counts = {}
+    for row in rows or []:
+        raw = row.get(field)
+        key = str(raw).strip() if raw not in (None, "") else ""
+        if not key and not include_empty:
+            continue
+        key = key or "EMPTY"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: item[0]))
+
+
+def build_rejection_summary_v1(results):
+    """Aggregates current-run decisions only. No future outcome is computed."""
+    rows = list(results or [])
+    non_candidates = [r for r in rows if r.get("flag") != "CANDIDAT"]
+    return {
+        "schema_version": "1.0.0",
+        "by_final_flag": _count_by(rows, "flag", include_empty=True),
+        "non_candidate_by_bucket": _count_by(non_candidates, "signal_quality_bucket", include_empty=True),
+        "non_candidate_by_regime_rule": _count_by(non_candidates, "regime_rule_applied", include_empty=True),
+        "non_candidate_by_risk_guard_reason": _count_by(non_candidates, "risk_guard_reason", include_empty=True),
+    }
+
+
+def build_selection_funnel_v1(context):
+    """
+    Builds only stages observable in the current code path.
+    Names deliberately avoid claiming access to provider-raw pairs or future outcomes.
+    """
+    results = list(context.get("results") or [])
+    setups_detected = sum(
+        1 for row in results
+        if str(row.get("direction") or "").upper() in ("LONG", "SHORT")
+        and str(row.get("setup_family") or "") not in ("", "NEUTRAL_NO_TRADE")
+    )
+    passed_safety = sum(
+        1 for row in results
+        if row.get("flag") != "REJET"
+        and bool(row.get("rr_valid"))
+        and row.get("market_danger_level") != "HIGH"
+        and str(row.get("direction") or "").upper() in ("LONG", "SHORT")
+    )
+    return {
+        "schema_version": "1.0.0",
+        "run_id": context["run_id"],
+        "run_started_at_utc": datetime.fromtimestamp(context["run_ts"], tz=timezone.utc).isoformat(),
+        "run_duration_ms": round(float(context.get("run_duration_ms") or 0), 1),
+        "pairs_requested": int(context.get("pairs_requested") or 0),
+        "pairs_scanned": int(context.get("pairs_scanned") or 0),
+        "pairs_prescore_eligible": int(context.get("pairs_prescore_eligible") or 0),
+        "selected_for_full_analysis": int(context.get("selected_for_full_analysis") or 0),
+        "cooldown_skipped": int(context.get("cooldown_skipped") or 0),
+        "scoring_attempted": int(context.get("scoring_attempted") or 0),
+        "scoring_successful": len(results),
+        "setups_detected": setups_detected,
+        "passed_safety": passed_safety,
+        "candidate_count_before_dedup": int(context.get("candidate_count_before_dedup") or 0),
+        "candidate_count_after_dedup": int(context.get("candidate_count_after_dedup") or 0),
+        "watchlist_total": sum(1 for row in results if row.get("flag") == "WATCHLIST"),
+        "rejected_total": sum(1 for row in results if row.get("flag") == "REJET"),
+        "short_watch_total": sum(1 for row in results if row.get("flag") == "SHORT_WATCH"),
+        "selected_output_count": int(context.get("selected_output_count") or 0),
+        "telegram_signal_count": int(context.get("telegram_signal_count") or 0),
+        "watchlist_fallback_used": bool(context.get("watchlist_fallback_used")),
+        "short_watch_fallback_used": bool(context.get("short_watch_fallback_used")),
+        "market_regime": context.get("market_regime", "unknown"),
+        "btc_phase": context.get("btc_phase", "BTC_UNCLEAR"),
+        "data_source": context.get("data_source", "UNAVAILABLE"),
+    }
+
+
+def _publish_funnel_audit_worker(audit_payload):
+    """Best-effort worker. Never raises to /full_analysis and never retries."""
+    _audit_stats_update(attempted=1, status="attempting")
+    try:
+        if not FUNNEL_AUDIT_URL or not FUNNEL_AUDIT_SECRET:
+            raise RuntimeError("funnel audit enabled but URL/secret configuration is incomplete")
+
+        body = dict(audit_payload)
+        # Google Apps Script Web Apps do not reliably expose arbitrary request
+        # headers, so the secret is sent inside the HTTPS JSON body and removed
+        # by the Web App before validation/logging/writing.
+        body["auth_secret"] = FUNNEL_AUDIT_SECRET
+        raw = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            FUNNEL_AUDIT_URL,
+            data=raw,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=FUNNEL_AUDIT_TIMEOUT_SECONDS) as response:
+            status_code = int(getattr(response, "status", response.getcode()))
+            response_body = response.read(2048).decode("utf-8", errors="replace")
+        if status_code < 200 or status_code >= 300:
+            raise RuntimeError(f"Apps Script HTTP {status_code}")
+        try:
+            response_json = json.loads(response_body) if response_body else {}
+        except Exception:
+            response_json = {}
+        app_status = str(response_json.get("status") or "")
+        if app_status not in ("ok", "duplicate"):
+            raise RuntimeError(f"Apps Script application status {app_status or 'missing'}")
+        _audit_stats_update(succeeded=1, status=f"{app_status}:{status_code}")
+        logger.info(
+            "Funnel audit delivered: run_id=%s http=%s app_status=%s",
+            audit_payload.get("run_id"), status_code, app_status
+        )
+        return {"ok": True, "status_code": status_code, "app_status": app_status}
+    except Exception as exc:
+        # Secret is never included in this log line or in the exception context.
+        _audit_stats_update(failed=1, status=f"failed:{type(exc).__name__}")
+        logger.warning(
+            "Non-blocking funnel audit failure: run_id=%s error_type=%s error=%s",
+            audit_payload.get("run_id"), type(exc).__name__, str(exc)[:240]
+        )
+        return {"ok": False, "error_type": type(exc).__name__}
+
+
+def queue_funnel_audit(audit_payload):
+    """Queues a single delivery and returns immediately; no retry is scheduled."""
+    if not FUNNEL_AUDIT_ENABLED:
+        return False
+    try:
+        _FUNNEL_AUDIT_EXECUTOR.submit(_publish_funnel_audit_worker, dict(audit_payload))
+        return True
+    except Exception as exc:
+        _audit_stats_update(failed=1, status=f"queue_failed:{type(exc).__name__}")
+        logger.warning("Non-blocking funnel audit queue failure: %s", type(exc).__name__)
+        return False
+
+
+def finalize_full_analysis_payload(payload, context):
+    """Adds observability fields only when enabled, then queues the audit push."""
+    if not FUNNEL_AUDIT_ENABLED:
+        return payload
+
+    selection_funnel = build_selection_funnel_v1(context)
+    rejection_summary = build_rejection_summary_v1(context.get("results") or [])
+    payload["selection_funnel"] = selection_funnel
+    payload["rejection_summary"] = rejection_summary
+    payload["app_version"] = APP_VERSION
+    payload["instrumentation_version"] = INSTRUMENTATION_VERSION
+
+    audit_payload = {
+        "schema_version": "1.0.0",
+        "run_id": selection_funnel["run_id"],
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "service": "crypto-scorer",
+        "app_version": APP_VERSION,
+        "decision_version": DECISION_VERSION,
+        "instrumentation_version": INSTRUMENTATION_VERSION,
+        "selection_funnel": selection_funnel,
+        "rejection_summary": rejection_summary,
+    }
+    queued = False
+    try:
+        queued = queue_funnel_audit(audit_payload)
+    except Exception:
+        # Defensive outer guard: instrumentation must never alter the HTTP result.
+        logger.exception("Non-blocking funnel audit failure before queue submission")
+    payload["audit_delivery"] = {
+        "queued": bool(queued),
+        **_audit_stats_snapshot(),
+    }
+    return payload
+
+
 # ─── ENDPOINT /full_analysis ──────────────────────────────────────────────────
 
 @app.route("/full_analysis", methods=["POST"])
 def full_analysis():
+    run_ts = time.time()
+    run_started_monotonic = time.monotonic()
+    funnel_run_id = _new_funnel_run_id(run_ts)
     try:
         # Liste fixe conservée en filet de sécurité si le scanner dynamique échoue.
         symbols_config = [
@@ -5704,14 +5930,25 @@ def full_analysis():
         tickers_data, data_source_batch = get_dynamic_tickers(symbols_config)
 
         if not tickers_data:
-            return jsonify({
+            response_payload = {
                 "text": "SKIP",
                 "count": 0,
                 "signals": [],
                 "market_regime": "unknown",
                 "data_source": "UNAVAILABLE",
                 "error": "All providers unreachable: Binance Futures, Bybit Futures, Binance Vision Spot, Binance Spot"
-            })
+            }
+            return jsonify(finalize_full_analysis_payload(response_payload, {
+                "run_id": funnel_run_id,
+                "run_ts": run_ts,
+                "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
+                "pairs_requested": len(symbols_config),
+                "pairs_scanned": 0,
+                "results": [],
+                "market_regime": "unknown",
+                "btc_phase": "BTC_UNCLEAR",
+                "data_source": "UNAVAILABLE",
+            }))
 
         # ── Market regime BTC enrichi v4.7 ──────────────────────────────────
         # v6.4.2.2 : le scoring reste basé sur BTC 1h comme en v6.4.1.
@@ -5866,6 +6103,7 @@ def full_analysis():
             and r.get("market_danger_level") != "HIGH"
         ]
         candidats = limit_weak_candidates(candidats)
+        candidate_count_before_dedup = len(candidats)
 
         # ── V6.0.6g — Anti-doublon dedup_key ─────────────────────────────────
         # Double protection : verrou mémoire (intra-session, 60 min)
@@ -5909,6 +6147,7 @@ def full_analysis():
                 skipped_dedup
             )
         candidats = candidats_dedup
+        candidate_count_after_dedup = len(candidats)
 
         if candidats and candidats[0].get("trend_strength") == "weak":
             candidats = candidats[:1]
@@ -5989,7 +6228,7 @@ def full_analysis():
         ]
 
         if not candidats:
-            return jsonify({
+            response_payload = {
                 "text":             "SKIP",
                 "count":            0,
                 "telegram_count":   0,
@@ -6004,7 +6243,28 @@ def full_analysis():
                 "universe_size":    len(tickers_data),
                 "analyzed_count":   len(top_candidates),
                 "cooldown_skipped": cooldown_skipped
-            })
+            }
+            return jsonify(finalize_full_analysis_payload(response_payload, {
+                "run_id": funnel_run_id,
+                "run_ts": run_ts,
+                "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
+                "pairs_requested": len(symbols_config),
+                "pairs_scanned": len(tickers_data),
+                "pairs_prescore_eligible": len(scored),
+                "selected_for_full_analysis": len(top_candidates),
+                "cooldown_skipped": len(cooldown_skipped),
+                "scoring_attempted": len(to_score),
+                "results": results,
+                "candidate_count_before_dedup": candidate_count_before_dedup,
+                "candidate_count_after_dedup": candidate_count_after_dedup,
+                "selected_output_count": 0,
+                "telegram_signal_count": 0,
+                "watchlist_fallback_used": watchlist_fallback,
+                "short_watch_fallback_used": short_watch_fallback,
+                "market_regime": market_regime,
+                "btc_phase": market_details.get("btc_phase"),
+                "data_source": data_source_run,
+            }))
 
         # Formatage texte pour GPT — niveaux précalculés par Python.
         fallback_note = ""
@@ -6125,7 +6385,7 @@ def full_analysis():
                 mark_setup_id_emitted(dedup_key)
                 logger.info("V6.0.6g dedup_key marquée émise: %s", dedup_key)
 
-        return jsonify({
+        response_payload = {
             "text":             "\n".join(lines),
             "count":            len(candidats),
             "telegram_count":   len(telegram_signals),
@@ -6140,7 +6400,28 @@ def full_analysis():
             "universe_size":    len(tickers_data),
             "analyzed_count":   len(top_candidates),
             "cooldown_skipped": cooldown_skipped
-        })
+        }
+        return jsonify(finalize_full_analysis_payload(response_payload, {
+            "run_id": funnel_run_id,
+            "run_ts": run_ts,
+            "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
+            "pairs_requested": len(symbols_config),
+            "pairs_scanned": len(tickers_data),
+            "pairs_prescore_eligible": len(scored),
+            "selected_for_full_analysis": len(top_candidates),
+            "cooldown_skipped": len(cooldown_skipped),
+            "scoring_attempted": len(to_score),
+            "results": results,
+            "candidate_count_before_dedup": candidate_count_before_dedup,
+            "candidate_count_after_dedup": candidate_count_after_dedup,
+            "selected_output_count": len(candidats),
+            "telegram_signal_count": len(telegram_signals),
+            "watchlist_fallback_used": watchlist_fallback,
+            "short_watch_fallback_used": short_watch_fallback,
+            "market_regime": market_regime,
+            "btc_phase": market_details.get("btc_phase"),
+            "data_source": data_source_run,
+        }))
 
     except Exception as e:
         return jsonify({"error": str(e), "text": "SKIP", "count": 0}), 500
@@ -7010,8 +7291,11 @@ def provider_test():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.6.0",
+        "version": APP_VERSION,
+        "app_version": APP_VERSION,
         "decision_version": DECISION_VERSION,
+        "instrumentation_version": INSTRUMENTATION_VERSION,
+        "funnel_audit_enabled": FUNNEL_AUDIT_ENABLED,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
         "memory_brain_cache_loaded": bool(MEMORY_BRAIN_CACHE),
@@ -7027,12 +7311,16 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "crypto-scorer",
-        "version": "6.6.0",
+        "version": APP_VERSION,
+        "app_version": APP_VERSION,
         "decision_version": DECISION_VERSION,
+        "instrumentation_version": INSTRUMENTATION_VERSION,
+        "funnel_audit_enabled": FUNNEL_AUDIT_ENABLED,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
         "memory_brain_cache_loaded": bool(MEMORY_BRAIN_CACHE),
         "memory_brain_wr_global": MEMORY_WR_GLOBAL,
+        **({"funnel_audit_delivery": _audit_stats_snapshot()} if FUNNEL_AUDIT_ENABLED else {}),
     })
 
 @app.route("/status", methods=["GET"])
