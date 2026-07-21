@@ -197,12 +197,13 @@ DECISION_VERSION = os.environ.get("DECISION_VERSION", "v6.6.0")
 # ─── APP / INSTRUMENTATION VERSIONS — Sprint 1b-A (observability only) ───────
 # DECISION_VERSION remains unchanged by design: no scoring, selection, bucket,
 # Telegram or Memory Brain rule is modified by this instrumentation release.
-APP_VERSION = os.environ.get("APP_VERSION", "6.6.0.1")
-INSTRUMENTATION_VERSION = os.environ.get("INSTRUMENTATION_VERSION", "1.0.0")
+APP_VERSION = os.environ.get("APP_VERSION", "6.6.0.2")
+INSTRUMENTATION_VERSION = os.environ.get("INSTRUMENTATION_VERSION", "1.1.0")
 FUNNEL_AUDIT_ENABLED = os.environ.get("FUNNEL_AUDIT_ENABLED", "false").lower() == "true"
 FUNNEL_AUDIT_URL = os.environ.get("FUNNEL_AUDIT_URL", "").strip()
 FUNNEL_AUDIT_SECRET = os.environ.get("FUNNEL_AUDIT_SECRET", "")
 FUNNEL_AUDIT_TIMEOUT_SECONDS = float(os.environ.get("FUNNEL_AUDIT_TIMEOUT_SECONDS", "1.5"))
+PROVIDER_MIN_COVERAGE_RATIO = float(os.environ.get("PROVIDER_MIN_COVERAGE_RATIO", "0.50"))
 
 # Dedicated single-worker executor: /full_analysis only queues the best-effort
 # delivery and never waits for the Apps Script network call.
@@ -2225,11 +2226,31 @@ def build_batch_ticker_url(base_url, symbols):
     return f"{base_url}?symbols={urllib.parse.quote(symbols_json)}"
 
 
+def _empty_provider_metadata(*, configured_count=0, status="UNAVAILABLE"):
+    return {
+        "provider_raw_tickers_count": 0,
+        "configured_symbols_found": 0,
+        "configured_symbols_missing_count": int(configured_count or 0),
+        "below_liquidity_count": 0,
+        "provider_coverage_ratio": 0.0,
+        "provider_status": status,
+        "configured_symbols_missing": [],
+    }
+
+
 def get_dynamic_tickers(symbols_config=None):
     """
-    V5 SAFE PROVIDER : universe contrôlé avec fallback futures multi-source.
-    Ordre : Binance Futures batch -> Bybit Futures linear -> Binance Vision Spot -> Binance Spot.
-    Objectif : ne plus dépendre d'une seule IP Railway -> Binance.
+    v6.6.0.2 — provider coverage fix, without decision-rule changes.
+
+    Provider order remains unchanged:
+      Binance Futures full-universe -> Bybit Futures -> Binance Vision Spot -> Binance Spot.
+
+    Binance Futures is fetched once without the unsupported plural `symbols`
+    query parameter. Configured symbols are then selected locally. A partial
+    Futures response below PROVIDER_MIN_COVERAGE_RATIO is rejected and triggers
+    the existing fallback chain instead of being silently accepted.
+
+    Returns: (filtered_tickers, data_source, provider_metadata)
     """
     symbols_config = symbols_config or []
 
@@ -2245,53 +2266,132 @@ def get_dynamic_tickers(symbols_config=None):
         symbols.append(sym)
 
     if not symbols:
-        return [], "UNAVAILABLE"
+        return [], "UNAVAILABLE", _empty_provider_metadata(status="NO_CONFIGURED_SYMBOLS")
 
-    def fetch_binance_batches(base_url):
-        # IMPORTANT : certains symbols de la liste futures n'existent pas en Spot Vision.
-        # Avant, un seul batch KO tuait tout le scan. Maintenant, on ignore le batch KO
-        # et on conserve les autres données valides.
+    configured_set = set(symbols)
+
+    def build_metadata(raw_tickers, *, provider_status):
+        raw_tickers = raw_tickers if isinstance(raw_tickers, list) else []
+        all_by_symbol = {
+            normalize_symbol(t.get("symbol", "")): t
+            for t in raw_tickers
+            if isinstance(t, dict) and normalize_symbol(t.get("symbol", ""))
+        }
+        found_symbols = [s for s in symbols if s in all_by_symbol]
+        missing_symbols = [s for s in symbols if s not in all_by_symbol]
+        ratio = len(found_symbols) / len(symbols) if symbols else 0.0
+        return all_by_symbol, {
+            "provider_raw_tickers_count": len(raw_tickers),
+            "configured_symbols_found": len(found_symbols),
+            "configured_symbols_missing_count": len(missing_symbols),
+            "below_liquidity_count": 0,
+            "provider_coverage_ratio": round(ratio, 6),
+            "provider_status": provider_status,
+            "configured_symbols_missing": missing_symbols,
+        }
+
+    def fetch_binance_futures_full():
+        url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+        data = fetch_binance(url)
+        if not isinstance(data, list) or not data:
+            return None, _empty_provider_metadata(
+                configured_count=len(symbols), status="BINANCE_FUTURES_UNAVAILABLE"
+            )
+        all_by_symbol, meta = build_metadata(data, provider_status="FULL")
+        if meta["provider_coverage_ratio"] < PROVIDER_MIN_COVERAGE_RATIO:
+            meta["provider_status"] = "DEGRADED"
+            logger.warning(
+                "DEGRADED_PROVIDER_COVERAGE: %s/%s configured symbols found (%.1f%%) — falling back; missing=%s",
+                meta["configured_symbols_found"], len(symbols),
+                meta["provider_coverage_ratio"] * 100,
+                meta["configured_symbols_missing"][:25],
+            )
+            return None, meta
+        return [all_by_symbol[s] for s in symbols if s in all_by_symbol], meta
+
+    def fetch_binance_spot_batches(base_url, provider_status):
+        # Spot endpoints support the plural `symbols` parameter. Keep the
+        # established batching only for Spot fallbacks.
         out = []
         for batch in chunked(symbols, 20):
             url = build_batch_ticker_url(base_url, batch)
             data = fetch_binance(url)
-
             if data is None:
-                logger.warning("Batch KO sur %s avec %s symboles: %s", base_url, len(batch), batch)
+                logger.warning("Spot batch KO on %s with %s symbols: %s", base_url, len(batch), batch)
                 continue
-
             if isinstance(data, dict):
                 data = [data]
-
-            out.extend(data)
-
-        return out if out else None
+            if isinstance(data, list):
+                out.extend(data)
+        if not out:
+            return None, _empty_provider_metadata(
+                configured_count=len(symbols), status=provider_status + "_UNAVAILABLE"
+            )
+        all_by_symbol, meta = build_metadata(out, provider_status=provider_status)
+        return [all_by_symbol[s] for s in symbols if s in all_by_symbol], meta
 
     providers = []
     if BINANCE_ENABLED:
-        providers.append(("FUTURES", lambda: fetch_binance_batches("https://fapi.binance.com/fapi/v1/ticker/24hr")))
-    providers.append(("BYBIT_FUTURES", lambda: fetch_bybit_linear_tickers(symbols)))
-    providers.append(("SPOT_FALLBACK", lambda: fetch_binance_batches("https://data-api.binance.vision/api/v3/ticker/24hr")))
+        providers.append(("FUTURES", fetch_binance_futures_full))
+
+    def fetch_bybit_provider():
+        data = fetch_bybit_linear_tickers(symbols)
+        if not data:
+            return None, _empty_provider_metadata(
+                configured_count=len(symbols), status="FALLBACK_BYBIT_UNAVAILABLE"
+            )
+        all_by_symbol, meta = build_metadata(data, provider_status="FALLBACK_BYBIT")
+        return [all_by_symbol[s] for s in symbols if s in all_by_symbol], meta
+
+    providers.append(("BYBIT_FUTURES", fetch_bybit_provider))
+    providers.append((
+        "SPOT_FALLBACK",
+        lambda: fetch_binance_spot_batches(
+            "https://data-api.binance.vision/api/v3/ticker/24hr", "FALLBACK_BINANCE_VISION_SPOT"
+        )
+    ))
     if BINANCE_ENABLED:
-        providers.append(("SPOT_FALLBACK", lambda: fetch_binance_batches("https://api.binance.com/api/v3/ticker/24hr")))
+        providers.append((
+            "SPOT_FALLBACK",
+            lambda: fetch_binance_spot_batches(
+                "https://api.binance.com/api/v3/ticker/24hr", "FALLBACK_BINANCE_SPOT"
+            )
+        ))
 
     tickers = None
     data_source = "UNAVAILABLE"
+    provider_meta = _empty_provider_metadata(configured_count=len(symbols))
     for source, fn in providers:
-        tickers = fn()
-        if tickers:
+        candidate_tickers, candidate_meta = fn()
+        provider_meta = candidate_meta
+        if candidate_tickers:
+            tickers = candidate_tickers
             data_source = source
-            logger.info("Ticker provider OK: %s (%s tickers)", source, len(tickers))
+            logger.info(
+                "Ticker provider OK: %s raw=%s found=%s/%s coverage=%.1f%% status=%s",
+                source,
+                provider_meta.get("provider_raw_tickers_count", 0),
+                provider_meta.get("configured_symbols_found", 0),
+                len(symbols),
+                provider_meta.get("provider_coverage_ratio", 0.0) * 100,
+                provider_meta.get("provider_status", "UNKNOWN"),
+            )
             break
-        logger.warning("Ticker provider KO: %s", source)
+        logger.warning(
+            "Ticker provider KO/degraded: %s status=%s coverage=%.1f%%",
+            source,
+            provider_meta.get("provider_status", "UNKNOWN"),
+            provider_meta.get("provider_coverage_ratio", 0.0) * 100,
+        )
 
     if not tickers:
-        return [], "UNAVAILABLE"
+        return [], "UNAVAILABLE", provider_meta
 
     filtered = []
+    below_liquidity_count = 0
     for t in tickers:
         symbol = normalize_symbol(t.get("symbol", ""))
-        if not is_tradeable_usdt_symbol(symbol):
+        if symbol not in configured_set or not is_tradeable_usdt_symbol(symbol):
             continue
         try:
             volume = float(t.get("quoteVolume", 0))
@@ -2301,9 +2401,11 @@ def get_dynamic_tickers(symbols_config=None):
         if last_price <= 0:
             continue
         if volume < MIN_QUOTE_VOLUME_USDT and symbol not in TIER1_ALWAYS:
+            below_liquidity_count += 1
             continue
         filtered.append(t)
 
+    provider_meta["below_liquidity_count"] = below_liquidity_count
     filtered.sort(key=lambda x: float(x.get("quoteVolume", 0)), reverse=True)
     selected = {normalize_symbol(t.get("symbol")): t for t in filtered[:MAX_DYNAMIC_UNIVERSE]}
     all_by_symbol = {normalize_symbol(t.get("symbol")): t for t in tickers if normalize_symbol(t.get("symbol"))}
@@ -2311,7 +2413,7 @@ def get_dynamic_tickers(symbols_config=None):
         if sym in all_by_symbol:
             selected[sym] = all_by_symbol[sym]
 
-    return list(selected.values()), data_source
+    return list(selected.values()), data_source, provider_meta
 
 def quick_late_entry_risk(price_change_pct, range_pct):
     """Pré-filtre rapide basé ticker 24h avant chargement des klines."""
@@ -5743,7 +5845,7 @@ def build_rejection_summary_v1(results):
     rows = list(results or [])
     non_candidates = [r for r in rows if r.get("flag") != "CANDIDAT"]
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "by_final_flag": _count_by(rows, "flag", include_empty=True),
         "non_candidate_by_bucket": _count_by(non_candidates, "signal_quality_bucket", include_empty=True),
         "non_candidate_by_regime_rule": _count_by(non_candidates, "regime_rule_applied", include_empty=True),
@@ -5770,11 +5872,17 @@ def build_selection_funnel_v1(context):
         and str(row.get("direction") or "").upper() in ("LONG", "SHORT")
     )
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "run_id": context["run_id"],
         "run_started_at_utc": datetime.fromtimestamp(context["run_ts"], tz=timezone.utc).isoformat(),
         "run_duration_ms": round(float(context.get("run_duration_ms") or 0), 1),
         "pairs_requested": int(context.get("pairs_requested") or 0),
+        "provider_raw_tickers_count": int(context.get("provider_raw_tickers_count") or 0),
+        "configured_symbols_found": int(context.get("configured_symbols_found") or 0),
+        "configured_symbols_missing_count": int(context.get("configured_symbols_missing_count") or 0),
+        "below_liquidity_count": int(context.get("below_liquidity_count") or 0),
+        "provider_coverage_ratio": round(float(context.get("provider_coverage_ratio") or 0.0), 6),
+        "provider_status": context.get("provider_status", "UNAVAILABLE"),
         "pairs_scanned": int(context.get("pairs_scanned") or 0),
         "pairs_prescore_eligible": int(context.get("pairs_prescore_eligible") or 0),
         "selected_for_full_analysis": int(context.get("selected_for_full_analysis") or 0),
@@ -5871,7 +5979,7 @@ def finalize_full_analysis_payload(payload, context):
     payload["instrumentation_version"] = INSTRUMENTATION_VERSION
 
     audit_payload = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "run_id": selection_funnel["run_id"],
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "service": "crypto-scorer",
@@ -5927,7 +6035,7 @@ def full_analysis():
             "GMXUSDT"
         ]
         # ── V5.0 : UNIVERSE DYNAMIQUE ───────────────────────────────────────
-        tickers_data, data_source_batch = get_dynamic_tickers(symbols_config)
+        tickers_data, data_source_batch, provider_metadata = get_dynamic_tickers(symbols_config)
 
         if not tickers_data:
             response_payload = {
@@ -5943,6 +6051,12 @@ def full_analysis():
                 "run_ts": run_ts,
                 "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
                 "pairs_requested": len(symbols_config),
+                "provider_raw_tickers_count": provider_metadata.get("provider_raw_tickers_count", 0),
+                "configured_symbols_found": provider_metadata.get("configured_symbols_found", 0),
+                "configured_symbols_missing_count": provider_metadata.get("configured_symbols_missing_count", 0),
+                "below_liquidity_count": provider_metadata.get("below_liquidity_count", 0),
+                "provider_coverage_ratio": provider_metadata.get("provider_coverage_ratio", 0.0),
+                "provider_status": provider_metadata.get("provider_status", "UNAVAILABLE"),
                 "pairs_scanned": 0,
                 "results": [],
                 "market_regime": "unknown",
@@ -6249,6 +6363,12 @@ def full_analysis():
                 "run_ts": run_ts,
                 "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
                 "pairs_requested": len(symbols_config),
+                "provider_raw_tickers_count": provider_metadata.get("provider_raw_tickers_count", 0),
+                "configured_symbols_found": provider_metadata.get("configured_symbols_found", 0),
+                "configured_symbols_missing_count": provider_metadata.get("configured_symbols_missing_count", 0),
+                "below_liquidity_count": provider_metadata.get("below_liquidity_count", 0),
+                "provider_coverage_ratio": provider_metadata.get("provider_coverage_ratio", 0.0),
+                "provider_status": provider_metadata.get("provider_status", "UNAVAILABLE"),
                 "pairs_scanned": len(tickers_data),
                 "pairs_prescore_eligible": len(scored),
                 "selected_for_full_analysis": len(top_candidates),
@@ -6406,6 +6526,12 @@ def full_analysis():
             "run_ts": run_ts,
             "run_duration_ms": (time.monotonic() - run_started_monotonic) * 1000,
             "pairs_requested": len(symbols_config),
+            "provider_raw_tickers_count": provider_metadata.get("provider_raw_tickers_count", 0),
+            "configured_symbols_found": provider_metadata.get("configured_symbols_found", 0),
+            "configured_symbols_missing_count": provider_metadata.get("configured_symbols_missing_count", 0),
+            "below_liquidity_count": provider_metadata.get("below_liquidity_count", 0),
+            "provider_coverage_ratio": provider_metadata.get("provider_coverage_ratio", 0.0),
+            "provider_status": provider_metadata.get("provider_status", "UNAVAILABLE"),
             "pairs_scanned": len(tickers_data),
             "pairs_prescore_eligible": len(scored),
             "selected_for_full_analysis": len(top_candidates),
@@ -7226,81 +7352,40 @@ def evaluate_signals():
 
 @app.route("/provider_test", methods=["GET"])
 def provider_test():
-    """
-    Debug Railway/API providers.
-    À appeler dans le navigateur :
-    /provider_test
-
-    Objectif :
-    - vérifier si Binance Futures passe
-    - vérifier si Bybit Futures passe
-    - vérifier si Binance Vision Spot passe
-    - vérifier si Binance Spot passe
-    """
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-    results = {}
-
-    try:
-        bf_url = build_batch_ticker_url(
-            "https://fapi.binance.com/fapi/v1/ticker/24hr",
-            symbols
-        )
-        bf = fetch_binance(bf_url)
-        results["binance_futures"] = {
-            "ok": bf is not None,
-            "count": len(bf) if isinstance(bf, list) else (1 if bf else 0)
-        }
-    except Exception as e:
-        results["binance_futures"] = {"ok": False, "error": str(e)}
-
-    try:
-        bybit = fetch_bybit_linear_tickers(symbols)
-        results["bybit_futures"] = {
-            "ok": bybit is not None and len(bybit) > 0,
-            "count": len(bybit) if bybit else 0
-        }
-    except Exception as e:
-        results["bybit_futures"] = {"ok": False, "error": str(e)}
-
-    try:
-        bv_url = build_batch_ticker_url(
-            "https://data-api.binance.vision/api/v3/ticker/24hr",
-            symbols
-        )
-        bv = fetch_binance(bv_url)
-        results["binance_vision_spot"] = {
-            "ok": bv is not None,
-            "count": len(bv) if isinstance(bv, list) else (1 if bv else 0)
-        }
-    except Exception as e:
-        results["binance_vision_spot"] = {"ok": False, "error": str(e)}
-
-    try:
-        bs_url = build_batch_ticker_url(
-            "https://api.binance.com/api/v3/ticker/24hr",
-            symbols
-        )
-        bs = fetch_binance(bs_url)
-        results["binance_spot"] = {
-            "ok": bs is not None,
-            "count": len(bs) if isinstance(bs, list) else (1 if bs else 0)
-        }
-    except Exception as e:
-        results["binance_spot"] = {"ok": False, "error": str(e)}
-
+    """v6.6.0.2 provider coverage diagnostic on the real configured universe."""
+    symbols = [
+        "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT",
+        "ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","LTCUSDT","BCHUSDT","TRXUSDT",
+        "UNIUSDT","AAVEUSDT","MKRUSDT","COMPUSDT","CRVUSDT","SUSHIUSDT",
+        "ATOMUSDT","NEARUSDT","APTUSDT","SUIUSDT","SEIUSDT","INJUSDT","TIAUSDT",
+        "ARBUSDT","OPUSDT","STRKUSDT","JUPUSDT","PYTHUSDT","WLDUSDT",
+        "FETUSDT","RENDERUSDT","RNDRUSDT","GRTUSDT","TAOUSDT","ARKMUSDT","IOUSDT",
+        "FILUSDT","ARUSDT","STXUSDT","ICPUSDT","EGLDUSDT",
+        "PENDLEUSDT","ETHFIUSDT","ENAUSDT","ALTUSDT","PIXELUSDT","PORTALUSDT",
+        "MANTAUSDT","OMUSDT","ONDOUSDT","JASMYUSDT","LDOUSDT","RUNEUSDT",
+        "GMTUSDT","GALAUSDT","SANDUSDT","MANAUSDT","APEUSDT","AXSUSDT",
+        "PEPEUSDT","WIFUSDT","BONKUSDT","FLOKIUSDT","BOMEUSDT","SHIBUSDT",
+        "ETCUSDT","DYDXUSDT","BLURUSDT","ORDIUSDT","1000SATSUSDT","ZKUSDT",
+        "ZROUSDT","NOTUSDT","PEOPLEUSDT","BIGTIMEUSDT","BEAMXUSDT","CKBUSDT",
+        "MINAUSDT","KASUSDT","HIFIUSDT","MAGICUSDT","ACHUSDT","LQTYUSDT","GMXUSDT"
+    ]
+    tickers, source, metadata = get_dynamic_tickers(symbols)
     return jsonify({
-        "status": "ok",
+        "status": "ok" if tickers else "degraded",
         "service": "crypto-scorer",
         "version": APP_VERSION,
         "app_version": APP_VERSION,
         "decision_version": DECISION_VERSION,
         "instrumentation_version": INSTRUMENTATION_VERSION,
         "funnel_audit_enabled": FUNNEL_AUDIT_ENABLED,
+        "provider_min_coverage_ratio": PROVIDER_MIN_COVERAGE_RATIO,
+        "selected_provider": source,
+        "filtered_tickers_count": len(tickers),
+        "provider_coverage": metadata,
         "historical_cache_loaded": bool(HISTORICAL_PERFORMANCE_CACHE),
         "historical_cache_entries": len(HISTORICAL_PERFORMANCE_CACHE),
         "memory_brain_cache_loaded": bool(MEMORY_BRAIN_CACHE),
         "memory_brain_wr_global": MEMORY_WR_GLOBAL,
-        "providers": results
     })
 
 
